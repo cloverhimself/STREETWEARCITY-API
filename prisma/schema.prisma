@@ -1,0 +1,375 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Connection URL lives in prisma.config.ts (CLI) and src/lib/prisma.ts (runtime), not here.
+}
+
+// ---------------------------------------------------------------------------
+// Identity & access. Roles are composed of permissions (role_permissions) so
+// new roles or permission sets don't require code changes, per the SRS.
+// ---------------------------------------------------------------------------
+
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  passwordHash    String
+  phone           String?
+  emailVerifiedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  profile            Profile?
+  roles              UserRole[]
+  addresses          Address[]
+  orders             Order[]
+  wishlist           Wishlist?
+  notifications      Notification[]
+  activityLogs       ActivityLog[]
+  verificationTokens VerificationToken[]
+
+  @@map("users")
+}
+
+model Profile {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  firstName String?
+  lastName  String?
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("profiles")
+}
+
+// Single-use tokens for email verification and password reset. The token
+// itself is stored hashed, mirroring how passwords are handled, so a leaked
+// database dump doesn't hand out working reset links.
+model VerificationToken {
+  id        String                @id @default(uuid())
+  userId    String
+  user      User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String                @unique
+  type      VerificationTokenType
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime              @default(now())
+
+  @@map("verification_tokens")
+}
+
+enum VerificationTokenType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
+model Role {
+  id          String           @id @default(uuid())
+  name        String           @unique
+  description String?
+  permissions RolePermission[]
+  users       UserRole[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id    String           @id @default(uuid())
+  key   String           @unique
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+model Category {
+  id       String    @id @default(uuid())
+  name     String    @unique
+  products Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id             String    @id @default(uuid())
+  sku            String    @unique
+  name           String
+  description    String?
+  price          Decimal   @db.Decimal(12, 2)
+  compareAtPrice Decimal?  @db.Decimal(12, 2)
+  sizeType       SizeType
+  categoryId     String
+  category       Category  @relation(fields: [categoryId], references: [id])
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  images        ProductImage[]
+  variants      ProductVariant[]
+  orderItems    OrderItem[]
+  wishlistItems WishlistItem[]
+
+  @@map("products")
+}
+
+model ProductImage {
+  id        String  @id @default(uuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  url       String
+  position  Int     @default(0)
+
+  @@map("product_images")
+}
+
+// One row per color/size combination actually sold, each with its own inventory.
+model ProductVariant {
+  id        String  @id @default(uuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  color     String
+  colorHex  String
+  size      String
+  sku       String  @unique
+
+  inventory         Inventory?
+  orderItems        OrderItem[]
+  stockReservations StockReservation[]
+
+  @@unique([productId, color, size])
+  @@map("product_variants")
+}
+
+// ---------------------------------------------------------------------------
+// Inventory. total/reserved are tracked separately so a checkout hold never
+// oversells a variant; availableQuantity is derived, not stored, to avoid drift.
+// ---------------------------------------------------------------------------
+
+model Inventory {
+  id               String         @id @default(uuid())
+  variantId        String         @unique
+  variant          ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  totalQuantity    Int            @default(0)
+  reservedQuantity Int            @default(0)
+  updatedAt        DateTime       @updatedAt
+
+  logs InventoryLog[]
+
+  @@map("inventory")
+}
+
+model InventoryLog {
+  id          String    @id @default(uuid())
+  inventoryId String
+  inventory   Inventory @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+  delta       Int
+  reason      String
+  actorUserId String?
+  createdAt   DateTime  @default(now())
+
+  @@map("inventory_logs")
+}
+
+// A checkout hold on a variant. TTL-based release keeps abandoned checkouts
+// from locking stock forever (see SRS edge case: eternal reservations).
+model StockReservation {
+  id        String         @id @default(uuid())
+  variantId String
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  orderId   String?        @unique
+  order     Order?         @relation(fields: [orderId], references: [id])
+  quantity  Int
+  status    String         @default("active")
+  expiresAt DateTime
+  createdAt DateTime       @default(now())
+
+  @@map("stock_reservations")
+}
+
+// ---------------------------------------------------------------------------
+// Orders & payments
+// ---------------------------------------------------------------------------
+
+model Order {
+  id                String      @id @default(uuid())
+  orderNumber       String      @unique
+  userId            String
+  user              User        @relation(fields: [userId], references: [id])
+  status            OrderStatus @default(PENDING)
+  subtotal          Decimal     @db.Decimal(12, 2)
+  deliveryFee       Decimal     @db.Decimal(12, 2)
+  discount          Decimal     @default(0) @db.Decimal(12, 2)
+  total             Decimal     @db.Decimal(12, 2)
+  shippingAddressId String
+  shippingAddress   Address     @relation(fields: [shippingAddressId], references: [id])
+  notes             String?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  items       OrderItem[]
+  payment     Payment?
+  reservation StockReservation?
+
+  @@map("orders")
+}
+
+model OrderItem {
+  id        String         @id @default(uuid())
+  orderId   String
+  order     Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product        @relation(fields: [productId], references: [id])
+  variantId String
+  variant   ProductVariant @relation(fields: [variantId], references: [id])
+  quantity  Int
+  unitPrice Decimal        @db.Decimal(12, 2)
+
+  @@map("order_items")
+}
+
+// The payment lifecycle is PENDING -> PROCESSING -> VERIFIED -> COMPLETED,
+// or FAILED/REFUNDED. The provider's synchronous response is never treated as
+// confirmation on its own, only the verified webhook/status check is.
+// `provider` + `idempotencyKey` are what make the provider swappable: the
+// checkout flow and this table don't change when the active provider does.
+model Payment {
+  id             String        @id @default(uuid())
+  orderId        String        @unique
+  order          Order         @relation(fields: [orderId], references: [id])
+  provider       String
+  providerRef    String?
+  idempotencyKey String        @unique
+  status         PaymentStatus @default(PENDING)
+  amount         Decimal       @db.Decimal(12, 2)
+  currency       String        @default("NGN")
+  failureReason  String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@map("payments")
+}
+
+// ---------------------------------------------------------------------------
+// Customer data
+// ---------------------------------------------------------------------------
+
+model Address {
+  id        String  @id @default(uuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label     String
+  line1     String
+  line2     String?
+  city      String
+  state     String
+  zip       String
+  isDefault Boolean @default(false)
+  orders    Order[]
+
+  @@map("addresses")
+}
+
+model Wishlist {
+  id     String         @id @default(uuid())
+  userId String         @unique
+  user   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items  WishlistItem[]
+
+  @@map("wishlists")
+}
+
+model WishlistItem {
+  wishlistId String
+  wishlist   Wishlist @relation(fields: [wishlistId], references: [id], onDelete: Cascade)
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  addedAt    DateTime @default(now())
+
+  @@id([wishlistId, productId])
+  @@map("wishlist_items")
+}
+
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@map("notifications")
+}
+
+// Every administrative action: actor, action, affected resource, before/after
+// values, when, and optionally where from. Nothing destructive is hard-deleted
+// from this table.
+model ActivityLog {
+  id           String   @id @default(uuid())
+  actorUserId  String?
+  actor        User?    @relation(fields: [actorUserId], references: [id])
+  action       String
+  resourceType String
+  resourceId   String?
+  oldValue     Json?
+  newValue     Json?
+  ip           String?
+  device       String?
+  createdAt    DateTime @default(now())
+
+  @@map("activity_logs")
+}
+
+enum SizeType {
+  CLOTHING
+  ADJUSTABLE
+  FITTED
+  WAIST
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  VERIFIED
+  COMPLETED
+  FAILED
+  REFUNDED
+}
