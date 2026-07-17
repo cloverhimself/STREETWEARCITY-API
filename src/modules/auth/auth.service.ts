@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import bcrypt from "bcryptjs";
 import { prisma } from "../../lib/prisma";
-import { signAccessToken, signRefreshToken } from "../../lib/jwt";
+import { signAccessToken, signRefreshToken, verifyRefreshToken } from "../../lib/jwt";
 import { HttpError } from "../../utils/http-error";
 
 const SALT_ROUNDS = 12;
@@ -28,6 +28,8 @@ async function issueTokens(userId: string) {
   return {
     accessToken: signAccessToken({ sub: userId, roles, permissions }),
     refreshToken: signRefreshToken(userId),
+    roles,
+    permissions,
   };
 }
 
@@ -79,6 +81,30 @@ export async function login(email: string, password: string) {
   if (user.deletedAt) throw HttpError.unauthorized("Invalid email or password");
 
   return { user, tokens: await issueTokens(user.id) };
+}
+
+export async function refreshTokens(refreshToken: string) {
+  let userId: string;
+  try {
+    userId = verifyRefreshToken(refreshToken).sub;
+  } catch {
+    throw HttpError.unauthorized("Invalid or expired refresh token");
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user || user.deletedAt) throw HttpError.unauthorized("Invalid or expired refresh token");
+
+  // Permissions are re-resolved rather than copied from the old token, in case
+  // the user's roles changed since it was issued.
+  return { user, tokens: await issueTokens(user.id) };
+}
+
+export async function getCurrentUser(userId: string) {
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { id: userId },
+    include: { profile: true, roles: { include: { role: true } } },
+  });
+  return { ...user, roles: user.roles.map((r) => r.role.name) };
 }
 
 export async function requestPasswordReset(email: string) {

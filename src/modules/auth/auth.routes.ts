@@ -1,8 +1,10 @@
 import { Router } from "express";
+import { authGuard } from "../../middleware/auth-guard";
 import { authRateLimit } from "../../middleware/rate-limit";
+import { HttpError } from "../../utils/http-error";
 import { ok } from "../../utils/api-response";
-import { login, register, requestPasswordReset, resetPassword, verifyEmail } from "./auth.service";
-import { loginSchema, registerSchema, requestPasswordResetSchema, resetPasswordSchema, verifyEmailSchema } from "./auth.validators";
+import { getCurrentUser, login, refreshTokens, register, requestPasswordReset, resetPassword, verifyEmail } from "./auth.service";
+import { loginSchema, refreshTokenSchema, registerSchema, requestPasswordResetSchema, resetPasswordSchema, verifyEmailSchema } from "./auth.validators";
 
 export const authRouter = Router();
 
@@ -24,6 +26,18 @@ authRouter.post("/login", async (req, res) => {
   const { email, password } = loginSchema.parse(req.body);
   const { user, tokens } = await login(email, password);
   return ok(res, { user: { id: user.id, email: user.email }, ...tokens });
+});
+
+authRouter.post("/refresh", async (req, res) => {
+  const { refreshToken } = refreshTokenSchema.parse(req.body);
+  const { user, tokens } = await refreshTokens(refreshToken);
+  return ok(res, { user: { id: user.id, email: user.email }, ...tokens });
+});
+
+authRouter.get("/me", authGuard, async (req, res) => {
+  if (!req.user) throw HttpError.unauthorized();
+  const user = await getCurrentUser(req.user.sub);
+  return ok(res, { id: user.id, email: user.email, profile: user.profile, roles: user.roles, emailVerified: !!user.emailVerifiedAt });
 });
 
 authRouter.post("/request-password-reset", async (req, res) => {

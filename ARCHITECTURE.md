@@ -24,7 +24,7 @@ Prisma 7 moved the database connection string out of `schema.prisma` entirely. `
 ```
 src/
   modules/
-    auth/           # register, login, verify-email, password reset — fully implemented
+    auth/           # register, login, verify-email, password reset, refresh, /me — fully implemented
     products/       # catalog reads — minimal, CRUD pending
     inventory/       # stock, reservations, inventory logs — scaffolded, not implemented
     cart/             # checkout/reservation flow — scaffolded, not implemented
@@ -63,7 +63,9 @@ prisma/
 
 ## RBAC model
 
-Permissions are composed, not hardcoded (SRS §5). `Role` and `Permission` are separate tables joined by `RolePermission`; a user gets roles via `UserRole`. At login, `auth.service.ts` resolves the logged-in user's permission set once and embeds it in the JWT access token, so authorization checks (`requirePermission("orders.update")`) don't need a database round trip on every request — only login (and refresh) touches the roles/permissions tables. `prisma/seed.ts` seeds the baseline roles from the SRS: `super_admin`, `product_manager`, `inventory_manager`, `order_manager`, `finance_manager`, `customer_support`, plus `customer` for regular shoppers.
+Permissions are composed, not hardcoded (SRS §5). `Role` and `Permission` are separate tables joined by `RolePermission`; a user gets roles via `UserRole`. At login (and again on `/auth/refresh`, in case roles changed since the last token) `auth.service.ts` resolves the logged-in user's permission set and embeds it in the JWT access token, so authorization checks (`requirePermission("orders.update")`) don't need a database round trip on every request. `prisma/seed.ts` seeds the baseline roles from the SRS — `super_admin`, `product_manager`, `inventory_manager`, `order_manager`, `finance_manager`, `customer_support`, plus `customer` for regular shoppers — and also seeds one `super_admin` login (`SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD` in env, defaults to `admin@streetwearcity.com` / `ChangeMe123!`), dev-only, so there's something to sign into `/admin` with locally.
+
+The frontend gates its own `/admin` route by checking the login response's `permissions` array is non-empty — a plain `customer` login (zero permissions) is rejected client-side with an error, not just hidden. That check lives in `streetwarecity/src/components/admin/useAdmin.ts`'s `submitAdminLogin`.
 
 ## Payments: how the provider swap actually works
 
@@ -78,6 +80,12 @@ Nothing outside `modules/payments/` should ever import a provider SDK directly. 
 To add a second provider: implement `PaymentProvider` in `modules/payments/providers/<name>/`, register it in `provider.registry.ts`, add its secret keys to `.env.example`. Nothing else changes.
 
 **Known gap**: the Bachs provider implementation (`providers/bachs/bachs.provider.ts`) is written against best-effort assumptions about Bachs's REST API shape — their docs portal returned 403 while this was scaffolded, and their official `@bachs/sdk` npm package is currently a `0.0.1` placeholder with no implementation. The endpoint paths, field names, and webhook signature header in that file need to be confirmed against Bachs's actual dashboard/docs before any real transaction runs through it.
+
+## Frontend integration
+
+`streetwarecity` (the Next.js frontend) talks to this API through a single wrapper, `src/lib/api.ts`'s `apiFetch`, which reads `NEXT_PUBLIC_API_URL` (`.env.local`, defaults to `http://localhost:4000/api/v1`), attaches the stored access token as a bearer header, parses this API's `{success, data}` / `{success, error}` envelope into a typed result or a thrown `ApiError`, and on a `401` tries exactly one silent refresh via `/auth/refresh` before giving up and clearing the stored session. Tokens live in `localStorage` under `swc:tokens`, shared between the storefront (`useStorefront.ts`) and the admin app (`useAdmin.ts`) since they're both the same Next.js origin.
+
+The frontend's auth modal only implements what this API actually supports: link-based email verification and password reset (`/verify-email` and `/reset-password` pages, not inline codes), matching `auth.service.ts`'s token-hash design. Register does not log the user in — it ends in a "check your email" state, consistent with `emailVerifiedAt` gating nothing server-side yet but existing as the intended checkpoint.
 
 ## Inventory & reservations
 
@@ -102,7 +110,9 @@ npm run dev                 # tsx watch, http://localhost:4000
 - No CI pipeline yet.
 - `cart`, `orders`, `inventory`, `notifications`, `analytics`, `activity-logs`, `admin` modules are routing-wired but have no business logic — see the TODO comment at the top of each `*.routes.ts`.
 - No stock-reservation TTL sweep job yet (see Inventory section above).
+- No actual email/SMS delivery yet — `auth.service.ts` generates verification/reset tokens but only logs an "integration point" comment where SendByte would send them. Locally, get the token by reading it off the service function's return value or the database.
 
 ## Changelog
 
 - **Phase 2 scaffold**: project structure, Prisma schema (full SRS §7 table list plus reservations/verification tokens), `auth` and `payments` modules implemented, remaining modules scaffolded and mounted, this document.
+- **Auth wiring**: added `/auth/refresh` and `/auth/me`; seeded a dev `super_admin` login; frontend (`streetwarecity`) now calls this API for real instead of mock state — register/login/verify-email/reset-password/logout on the storefront, and a real permission-gated login on `/admin`. Verified end to end against a local Postgres instance, including a real browser session (Playwright) for both the customer and admin flows.
