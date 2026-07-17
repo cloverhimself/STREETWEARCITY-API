@@ -87,6 +87,24 @@ To add a second provider: implement `PaymentProvider` in `modules/payments/provi
 
 The frontend's auth modal only implements what this API actually supports: link-based email verification and password reset (`/verify-email` and `/reset-password` pages, not inline codes), matching `auth.service.ts`'s token-hash design. Register does not log the user in — it ends in a "check your email" state, consistent with `emailVerifiedAt` gating nothing server-side yet but existing as the intended checkpoint.
 
+## Deployment
+
+Hosted on **Railway** (`streetwarecity-api` project, `Clover's Projects` workspace) — an Express service plus a managed Postgres, both in the same Railway project so `DATABASE_URL` resolves via Railway's internal network (`${{Postgres.DATABASE_URL}}`) rather than being hand-entered. Public URL: `https://streetwarecity-api-production.up.railway.app`.
+
+Railway builds with its default builder (Railpack) — `railway.json` deliberately does **not** pin `"builder": "NIXPACKS"`; that pin caused every build to fail with zero detected providers on this account (Railway has moved off Nixpacks as the default). If builds start failing with an empty provider list again, check whether `railway.json`'s `build` key crept back in.
+
+`railway.json`'s `deploy.startCommand` runs `npm run start:prod`, i.e. `prisma migrate deploy && node dist/server.js` — every deploy applies any pending migrations before the server starts. `prisma migrate deploy` is safe to re-run (no-ops when nothing's pending), so this doesn't need a separate release-step mechanism.
+
+Seeding production (roles/permissions/categories/admin login) can't go through `railway run` — that wrapper hung indefinitely in at least one environment for reasons that weren't tracked down. Instead, run the seed script directly against Postgres's `DATABASE_PUBLIC_URL` (get it via `railway variable list --service Postgres --json`, it's the public-proxy connection string, not the internal `postgres.railway.internal` one which only resolves from inside Railway's network):
+
+```bash
+DATABASE_URL="<DATABASE_PUBLIC_URL>" SEED_ADMIN_EMAIL="..." SEED_ADMIN_PASSWORD="..." npx tsx prisma/seed.ts
+```
+
+**CORS is locked to a single origin** (`CLIENT_ORIGIN` = the Vercel production URL). Vercel preview-deployment URLs (per-branch/per-PR) will get CORS-blocked until this is generalized to a pattern match or an allow-list — known gap, not fixed yet, low priority until preview environments actually matter.
+
+Frontend side: Vercel's `NEXT_PUBLIC_API_URL` must be set to `https://streetwarecity-api-production.up.railway.app/api/v1` (Production environment) for the deployed frontend to reach this backend at all — it isn't picked up automatically from anywhere, it's a separate manual step in the Vercel project's environment variable settings.
+
 ## Inventory & reservations
 
 `Inventory.totalQuantity` and `Inventory.reservedQuantity` are tracked separately; available stock is `total - reserved`, computed at query time rather than stored, so it can't drift out of sync. `StockReservation` rows hold a variant's stock during checkout with an `expiresAt` TTL — the reservation sweep job that releases expired holds back to available stock is not yet built (see `inventory` module TODO). Every stock change, restock or reservation-release alike, should write an `InventoryLog` row; nothing adjusts `Inventory.totalQuantity` directly without one.
@@ -116,3 +134,4 @@ npm run dev                 # tsx watch, http://localhost:4000
 
 - **Phase 2 scaffold**: project structure, Prisma schema (full SRS §7 table list plus reservations/verification tokens), `auth` and `payments` modules implemented, remaining modules scaffolded and mounted, this document.
 - **Auth wiring**: added `/auth/refresh` and `/auth/me`; seeded a dev `super_admin` login; frontend (`streetwarecity`) now calls this API for real instead of mock state — register/login/verify-email/reset-password/logout on the storefront, and a real permission-gated login on `/admin`. Verified end to end against a local Postgres instance, including a real browser session (Playwright) for both the customer and admin flows.
+- **First production deploy**: live on Railway with a managed Postgres, migrations applied automatically on deploy via the start command, production seeded with fresh secrets and a generated (not default) admin password. See the Deployment section above.
