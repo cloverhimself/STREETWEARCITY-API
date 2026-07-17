@@ -1,15 +1,35 @@
 import { Router } from "express";
-import { prisma } from "../../lib/prisma";
+import { authGuard } from "../../middleware/auth-guard";
+import { requirePermission } from "../../middleware/rbac-guard";
+import { HttpError } from "../../utils/http-error";
 import { ok } from "../../utils/api-response";
+import { createProduct, deleteProduct, getProduct, listProducts, updateProduct } from "./products.service";
+import { createProductSchema, updateProductSchema } from "./products.validators";
 
 export const productsRouter = Router();
 
-// Minimal read endpoint so the storefront has something real to hit while the
-// rest of this module (create/edit/delete, variants, images) is built out.
 productsRouter.get("/", async (_req, res) => {
-  const products = await prisma.product.findMany({
-    where: { deletedAt: null, isActive: true },
-    include: { images: true, variants: { include: { inventory: true } }, category: true },
-  });
-  return ok(res, products);
+  return ok(res, await listProducts());
+});
+
+productsRouter.get("/:id", async (req, res) => {
+  return ok(res, await getProduct(req.params.id as string));
+});
+
+productsRouter.post("/", authGuard, requirePermission("products.create"), async (req, res) => {
+  if (!req.user) throw HttpError.unauthorized();
+  const input = createProductSchema.parse(req.body);
+  return ok(res, await createProduct(input, req.user.sub), 201);
+});
+
+productsRouter.patch("/:id", authGuard, requirePermission("products.edit"), async (req, res) => {
+  if (!req.user) throw HttpError.unauthorized();
+  const input = updateProductSchema.parse(req.body);
+  return ok(res, await updateProduct(req.params.id as string, input, req.user.sub));
+});
+
+productsRouter.delete("/:id", authGuard, requirePermission("products.delete"), async (req, res) => {
+  if (!req.user) throw HttpError.unauthorized();
+  await deleteProduct(req.params.id as string, req.user.sub);
+  return ok(res, { deleted: true });
 });

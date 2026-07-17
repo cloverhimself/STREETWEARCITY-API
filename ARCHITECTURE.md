@@ -25,7 +25,7 @@ Prisma 7 moved the database connection string out of `schema.prisma` entirely. `
 src/
   modules/
     auth/           # register, login, verify-email, password reset, refresh, /me — fully implemented
-    products/       # catalog reads — minimal, CRUD pending
+    products/       # full CRUD, variant/inventory generation from color+sizeType — fully implemented
     inventory/       # stock, reservations, inventory logs — scaffolded, not implemented
     cart/             # checkout/reservation flow — scaffolded, not implemented
     orders/           # order lifecycle — scaffolded, not implemented
@@ -59,7 +59,19 @@ prisma/
   seed.ts            # baseline roles, permissions, categories
 ```
 
-`modules/*` marked "scaffolded, not implemented" have a router file with a comment describing what belongs there and are already mounted in `app.ts` under `/api/v1/<module>` — the wiring works end to end, the business logic inside doesn't exist yet. `auth` and `payments` are the two modules built out for real, as reference implementations for the pattern the rest should follow (controller stays thin, service holds the logic, Zod validates at the route boundary).
+`modules/*` marked "scaffolded, not implemented" have a router file with a comment describing what belongs there and are already mounted in `app.ts` under `/api/v1/<module>` — the wiring works end to end, the business logic inside doesn't exist yet. `auth`, `payments`, and now `products` are the modules built out for real, as reference implementations for the pattern the rest should follow (controller stays thin, service holds the logic, Zod validates at the route boundary).
+
+## Products: the frontend/database shape gap
+
+The frontend's `Product` type is flat (one `image`, one `stock` number, `colors` without per-color sizing). The database is properly normalized: a `Product` has many `ProductVariant`s (one row per color × size combination), each with its own `Inventory`. `products.service.ts#mapProduct` is where that gap gets bridged for every read — `stock` is `sum(variant.totalQuantity - variant.reservedQuantity)` across all variants (available, not total, same "never oversell" rule as the rest of the schema), `colors` is deduplicated across variants, and `badge` is computed (`"Low Stock"` under 6 available, `"New"` within 14 days of `createdAt`, otherwise `null` — `"Bestseller"` is never set because there's no sales data yet to justify it).
+
+**Known simplification**: the admin product form collects one flat stock number, not per-size stock, so `products.service.ts#createProduct` gives every generated variant (every color × every size for that `sizeType`) the same starting quantity. A `sizeType: "clothing"` product with 2 colors and a stock of 10 ends up with 12 variants at 10 units each (120 total), not 10 units total. Real per-variant stock entry is follow-up work, not this pass's scope.
+
+**Known simplification**: `updateProduct` replaces the entire variant set (delete + recreate) whenever colors, sizeType, or stock change, rather than diffing. Safe today because no real order ever references a variant yet. Once `orders`/`cart` are built, this needs a real migration strategy — you can't delete a `ProductVariant` an `OrderItem` or `StockReservation` points at.
+
+**Images stay URL-based, not uploaded**: Railway's filesystem is ephemeral (wiped on every redeploy) and no cloud storage provider is configured yet, so there's nowhere durable to put an uploaded file. The admin form takes an image URL directly (same interaction pattern as the color-chip list) rather than a file picker — it references already-hosted images (the seeded catalog uses `streetwarecity`'s bundled `/uploads/*.jpg` files). Real upload-to-cloud-storage is follow-up work once a provider (S3/R2/Cloudinary/etc.) is picked.
+
+`prisma/seed.ts` seeds the same 14 products the frontend used to hardcode in `src/lib/data.ts`, through the same variant-generation shape `createProduct` uses, so local dev and production both start with a real, working catalog instead of an empty one.
 
 ## RBAC model
 
@@ -129,9 +141,12 @@ npm run dev                 # tsx watch, http://localhost:4000
 - `cart`, `orders`, `inventory`, `notifications`, `analytics`, `activity-logs`, `admin` modules are routing-wired but have no business logic — see the TODO comment at the top of each `*.routes.ts`.
 - No stock-reservation TTL sweep job yet (see Inventory section above).
 - No actual email/SMS delivery yet — `auth.service.ts` generates verification/reset tokens but only logs an "integration point" comment where SendByte would send them. Locally, get the token by reading it off the service function's return value or the database.
+- No real file upload for product images (URL-referenced only) and no per-variant stock entry — both noted in the Products section above.
+- `updateProduct`'s delete-and-recreate variant strategy will need to change once `orders`/`cart` exist and real `OrderItem`/`StockReservation` rows can reference a variant.
 
 ## Changelog
 
 - **Phase 2 scaffold**: project structure, Prisma schema (full SRS §7 table list plus reservations/verification tokens), `auth` and `payments` modules implemented, remaining modules scaffolded and mounted, this document.
 - **Auth wiring**: added `/auth/refresh` and `/auth/me`; seeded a dev `super_admin` login; frontend (`streetwarecity`) now calls this API for real instead of mock state — register/login/verify-email/reset-password/logout on the storefront, and a real permission-gated login on `/admin`. Verified end to end against a local Postgres instance, including a real browser session (Playwright) for both the customer and admin flows.
 - **First production deploy**: live on Railway with a managed Postgres, migrations applied automatically on deploy via the start command, production seeded with fresh secrets and a generated (not default) admin password. See the Deployment section above.
+- **Products wired end-to-end**: full CRUD (`products.service.ts`), variant/inventory generation from color × sizeType, the 14-product mock catalog migrated into the seed script, and both the storefront (real shop grid, PDP with a real multi-image gallery instead of the old fake crop-position trick) and admin (real create/edit/delete, URL-based image input instead of the old non-functional blob-URL file picker) wired to the real API. Verified end to end with a real browser session covering the shop grid, a PDP, and admin product creation.

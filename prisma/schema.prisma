@@ -123,6 +123,7 @@ model Product {
   sku            String    @unique
   name           String
   description    String?
+  details        String?
   price          Decimal   @db.Decimal(12, 2)
   compareAtPrice Decimal?  @db.Decimal(12, 2)
   sizeType       SizeType

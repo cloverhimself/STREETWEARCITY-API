@@ -42,6 +42,39 @@ const ROLES: Record<string, readonly string[]> = {
 
 const CATEGORIES = ["Headwear", "Tops", "Bottoms"];
 
+// Same 14 products the frontend used to hardcode in src/lib/data.ts, migrated
+// into real rows so local dev and production both start with a real catalog
+// instead of an empty one. Images point at streetwarecity's existing bundled
+// /uploads/*.jpg files — see ARCHITECTURE.md's Deployment section on why
+// product images are URL references rather than uploaded files.
+const SIZE_LISTS: Record<string, string[]> = {
+  CLOTHING: ["XS", "S", "M", "L", "XL", "XXL"],
+  ADJUSTABLE: ["One Size (Adjustable)"],
+  FITTED: ["7", "7 1/8", "7 1/4", "7 3/8", "7 1/2", "7 5/8"],
+  WAIST: ["28", "30", "32", "34", "36", "38"],
+};
+
+function slugify(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+}
+
+const PRODUCTS_SEED = [
+  { sku: "SWC-BN-001", name: "Rosewild Camo Beanie", category: "Headwear", sizeType: "ADJUSTABLE", price: 38, compareAtPrice: null, image: "/uploads/Beanie.jpg", colors: [{ name: "Rose Camo", hex: "#e39fc2" }], stock: 14, description: "Brushed knit beanie in an all-over rose camo jacquard with tonal wing graphic. Deep rib fold for a lived-in fit.", details: "100% acrylic knit\nOne size, stretch fit\nHand wash cold" },
+  { sku: "SWC-BN-002", name: "Rosewild Camo Beanie, Reserve", category: "Headwear", sizeType: "ADJUSTABLE", price: 42, compareAtPrice: 48, image: "/uploads/Beanie.jpg", colors: [{ name: "Rose Camo", hex: "#e39fc2" }, { name: "Blackout", hex: "#1a1a1a" }], stock: 3, description: "Limited reserve run of our rose camo beanie with reinforced cuff stitching.", details: "100% acrylic knit\nOne size, stretch fit\nLimited reserve run" },
+  { sku: "SWC-CD-003", name: "Ranger Cadet Cap", category: "Headwear", sizeType: "ADJUSTABLE", price: 46, compareAtPrice: null, image: "/uploads/Cadet cap.jpg", colors: [{ name: "Woodland", hex: "#5b6b45" }], stock: 22, description: "Structured six-panel cadet cap in ripstop woodland camo with adjustable back strap.", details: "Cotton ripstop shell\nAdjustable D-ring strap\nSpot clean only" },
+  { sku: "SWC-FT-004", name: "Blackout Fitted 59FIFTY", category: "Headwear", sizeType: "FITTED", price: 52, compareAtPrice: null, image: "/uploads/fitted cap.jpg", colors: [{ name: "Blackout", hex: "#111111" }], stock: 30, description: "Flat-brim fitted cap in structured wool blend with embroidered eyes graphic.", details: "Wool blend shell\nFitted, non-adjustable\nDry clean only" },
+  { sku: "SWC-FT-005", name: "Blackout Fitted 59FIFTY, OG", category: "Headwear", sizeType: "FITTED", price: 56, compareAtPrice: null, image: "/uploads/fitted cap.jpg", colors: [{ name: "Blackout", hex: "#111111" }, { name: "Grey Pop", hex: "#8d8d8d" }], stock: 16, description: "OG colorway of our signature fitted with grey embroidery pop.", details: "Wool blend shell\nFitted, non-adjustable\nDry clean only" },
+  { sku: "SWC-JR-006", name: "Royals Mesh Jersey", category: "Tops", sizeType: "CLOTHING", price: 88, compareAtPrice: 110, image: "/uploads/Jerseyshirt1.jpg", colors: [{ name: "Black/White", hex: "#111111" }], stock: 18, description: "Oversized football-cut mesh jersey with embroidered crest and floral sleeve patches.", details: "100% polyester mesh\nOversized fit\nMachine wash cold" },
+  { sku: "SWC-JR-007", name: "Web 52 Mesh Jersey", category: "Tops", sizeType: "CLOTHING", price: 95, compareAtPrice: null, image: "/uploads/Jerseyshirt2.jpg", colors: [{ name: "White", hex: "#f5f5f3" }], stock: 9, description: "Archive mesh jersey pull with printed web graphics and bold varsity numbering. Verified authentic.", details: "100% polyester mesh\nTrue to size\nVerified authentic" },
+  { sku: "SWC-CT-008", name: "Lil Syna Graphic Crop Tee", category: "Tops", sizeType: "CLOTHING", price: 54, compareAtPrice: null, image: "/uploads/croptop1.jpg", colors: [{ name: "Black", hex: "#111111" }], stock: 20, description: "Cropped tee with contrast rhinestone stitching and spray-paint style graphic.", details: "100% cotton jersey\nCropped fit\nMachine wash cold" },
+  { sku: "SWC-CT-009", name: "Nine Lives Graffiti Crop Tee", category: "Tops", sizeType: "CLOTHING", price: 50, compareAtPrice: 58, image: "/uploads/croptop2.jpg", colors: [{ name: "White", hex: "#f5f5f3" }], stock: 0, description: "Boxy crop tee with hand-style graffiti graphic and pastel airbrush detailing.", details: "100% cotton jersey\nBoxy fit\nMachine wash cold" },
+  { sku: "SWC-DJ-010", name: "Cross Wash Baggy Jeans", category: "Bottoms", sizeType: "WAIST", price: 120, compareAtPrice: null, image: "/uploads/DenimJeans.jpg", colors: [{ name: "Rinse Indigo", hex: "#2b3550" }], stock: 26, description: "Heavyweight baggy denim with curved seam construction and tonal embroidery.", details: "14oz rigid denim\nBaggy fit, tapered hem\nMachine wash cold" },
+  { sku: "SWC-DJ-011", name: "Cross Wash Baggy Jeans, Rinse", category: "Bottoms", sizeType: "WAIST", price: 125, compareAtPrice: null, image: "/uploads/DenimJeans.jpg", colors: [{ name: "Rinse Indigo", hex: "#2b3550" }, { name: "Raw Black", hex: "#101010" }], stock: 11, description: "Rinse-wash colorway of our signature baggy denim, same curved-seam construction.", details: "14oz rigid denim\nBaggy fit\nMachine wash cold" },
+  { sku: "SWC-DJ-012", name: "Dragon Embroidered Baggy Jeans", category: "Bottoms", sizeType: "WAIST", price: 148, compareAtPrice: 170, image: "/uploads/DenimJeans2.jpg", colors: [{ name: "Jet Black", hex: "#0c0c0c" }], stock: 4, description: "Black baggy denim finished with a multicolor dragon embroidery at the hip.", details: "13oz rigid denim\nBaggy fit\nMachine wash cold" },
+  { sku: "SWC-DS-013", name: "Denim Genes Baggy Shorts", category: "Bottoms", sizeType: "WAIST", price: 78, compareAtPrice: null, image: "/uploads/Denimshorts.jpg", colors: [{ name: "Jet Black", hex: "#0c0c0c" }], stock: 19, description: "Knee-length denim shorts with contrast stitching and woven back patch.", details: "12oz rigid denim\nRelaxed fit\nMachine wash cold" },
+  { sku: "SWC-DS-014", name: "Denim Genes Baggy Shorts, Stone", category: "Bottoms", sizeType: "WAIST", price: 82, compareAtPrice: null, image: "/uploads/Denimshorts.jpg", colors: [{ name: "Jet Black", hex: "#0c0c0c" }, { name: "Stone Grey", hex: "#77726b" }], stock: 13, description: "Stone-toned colorway of our baggy denim short with the same relaxed cut.", details: "12oz rigid denim\nRelaxed fit\nMachine wash cold" },
+];
+
 async function main() {
   for (const key of PERMISSIONS) {
     await prisma.permission.upsert({ where: { key }, update: {}, create: { key } });
@@ -81,7 +114,39 @@ async function main() {
     create: { userId: adminUser.id, roleId: superAdminRole.id },
   });
 
-  console.log("Seed complete: roles, permissions, categories, and a super_admin login are in place.");
+  for (const p of PRODUCTS_SEED) {
+    const existing = await prisma.product.findUnique({ where: { sku: p.sku } });
+    if (existing) continue; // idempotent — don't touch a product an admin may have since edited
+
+    const category = await prisma.category.findUniqueOrThrow({ where: { name: p.category } });
+    const sizes = SIZE_LISTS[p.sizeType];
+    const variants = p.colors.flatMap((color) =>
+      sizes.map((size) => ({
+        color: color.name,
+        colorHex: color.hex,
+        size,
+        sku: `${p.sku}-${slugify(color.name)}-${slugify(size)}`.toUpperCase(),
+        inventory: { create: { totalQuantity: p.stock, reservedQuantity: 0 } },
+      }))
+    );
+
+    await prisma.product.create({
+      data: {
+        sku: p.sku,
+        name: p.name,
+        description: p.description,
+        details: p.details,
+        price: p.price,
+        compareAtPrice: p.compareAtPrice ?? undefined,
+        sizeType: p.sizeType as "CLOTHING" | "ADJUSTABLE" | "FITTED" | "WAIST",
+        categoryId: category.id,
+        images: { create: [{ url: p.image, position: 0 }] },
+        variants: { create: variants },
+      },
+    });
+  }
+
+  console.log("Seed complete: roles, permissions, categories, a super_admin login, and the product catalog are in place.");
   console.log(`  Admin login: ${SEED_ADMIN_EMAIL} / ${SEED_ADMIN_PASSWORD} (dev only — override via SEED_ADMIN_EMAIL/SEED_ADMIN_PASSWORD)`);
 }
 
