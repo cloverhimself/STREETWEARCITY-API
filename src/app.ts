@@ -16,6 +16,7 @@ import { notificationsRouter } from "./modules/notifications/notifications.route
 import { ordersRouter } from "./modules/orders/orders.routes";
 import { paymentsRouter } from "./modules/payments/payments.routes";
 import { productsRouter } from "./modules/products/products.routes";
+import { uploadsRouter } from "./modules/uploads/uploads.routes";
 
 export const app = express();
 
@@ -41,6 +42,7 @@ app.use("/api/v1/notifications", notificationsRouter);
 app.use("/api/v1/analytics", analyticsRouter);
 app.use("/api/v1/activity-logs", activityLogsRouter);
 app.use("/api/v1/admin", adminRouter);
+app.use("/api/v1/uploads", uploadsRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import bcrypt from "bcryptjs";
 import { prisma } from "../../lib/prisma";
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from "../../lib/jwt";
+import { sendPasswordResetEmail, sendVerificationEmail } from "../../lib/sendbyte";
 import { HttpError } from "../../utils/http-error";
 
 const SALT_ROUNDS = 12;
@@ -57,7 +58,7 @@ export async function register(input: { email: string; password: string; firstNa
     data: { userId: user.id, tokenHash: hashToken(token), type: "EMAIL_VERIFICATION", expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS) },
   });
 
-  // Integration point: send `token` via the notifications module (SendByte) as a /verify-email?token= link.
+  await sendVerificationEmail(user.email, token);
   return { user, emailVerificationToken: token };
 }
 
@@ -118,7 +119,7 @@ export async function requestPasswordReset(email: string) {
     data: { userId: user.id, tokenHash: hashToken(token), type: "PASSWORD_RESET", expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_MS) },
   });
 
-  // Integration point: send `token` via the notifications module (SendByte) as a /reset-password?token= link.
+  await sendPasswordResetEmail(user.email, token);
   return token;
 }
 
