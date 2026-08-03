@@ -24,6 +24,7 @@ function bachsHeaders() {
 
 export const bachsProvider: PaymentProvider = {
   name: "bachs",
+  webhookSignatureHeader: "x-bachs-signature",
 
   async initialize(input: InitializePaymentInput): Promise<InitializePaymentResult> {
     const res = await fetch(`${BACHS_API_BASE}/checkout/sessions`, {

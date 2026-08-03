@@ -35,6 +35,11 @@ export interface WebhookEvent {
 export interface PaymentProvider {
   readonly name: string;
 
+  // Lowercase request header the provider signs its webhook with (e.g.
+  // "x-paystack-signature"), so the route can extract it generically instead
+  // of hardcoding one provider's header name.
+  readonly webhookSignatureHeader: string;
+
   initialize(input: InitializePaymentInput): Promise<InitializePaymentResult>;
 
   verify(providerRef: string): Promise<VerifyPaymentResult>;

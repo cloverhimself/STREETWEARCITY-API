@@ -9,8 +9,8 @@ export const paymentsRouter = Router();
 // Raw body is required here (not the global JSON parser) because signature
 // verification hashes the exact bytes the provider sent.
 paymentsRouter.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
-  const signature = req.headers["x-bachs-signature"];
   const provider = getActivePaymentProvider();
+  const signature = req.headers[provider.webhookSignatureHeader];
   const event = provider.parseWebhook(req.body, Array.isArray(signature) ? signature[0] : signature);
   await reconcilePaymentStatus(event.providerRef, event.status);
   // Acknowledge immediately; providers retry on anything but a prompt 2xx.
