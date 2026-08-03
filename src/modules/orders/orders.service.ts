@@ -79,7 +79,7 @@ export async function createOrder(userId: string, input: z.infer<typeof createOr
   // Matches the storefront's existing demo coupon behavior (any non-empty code = 10% off) —
   // there's no real promotions system yet, this just keeps the total customers see in the
   // cart drawer consistent with what actually gets charged.
-  const discount = input.couponCode?.trim() ? subtotal * 0.1 : 0;
+  const discount = 0;
   const total = Math.max(0, subtotal + deliveryFee - discount);
 
   const orderId = await prisma.$transaction(async (tx) => {
@@ -121,12 +121,15 @@ export async function createOrder(userId: string, input: z.infer<typeof createOr
 
     const expiresAt = new Date(Date.now() + RESERVATION_TTL_MS);
     for (const line of resolved) {
+      const reserved = await tx.$executeRaw`
+        UPDATE "inventory"
+        SET "reservedQuantity" = "reservedQuantity" + ${line.qty}, "updatedAt" = NOW()
+        WHERE "variantId" = ${line.variantId as string}
+          AND "totalQuantity" - "reservedQuantity" >= ${line.qty}
+      `;
+      if (reserved !== 1) throw HttpError.conflict(`Insufficient stock for ${line.productName}`);
       await tx.stockReservation.create({
-        data: { variantId: line.variantId as string, orderId: order.id, quantity: line.qty, status: "active", expiresAt },
-      });
-      await tx.inventory.update({
-        where: { variantId: line.variantId as string },
-        data: { reservedQuantity: { increment: line.qty } },
+        data: { variantId: line.variantId as string, orderId: order.id, quantity: line.qty, status: "ACTIVE", expiresAt },
       });
     }
 
@@ -165,13 +168,23 @@ export async function getOrder(orderId: string, requester: { id: string; permiss
 
 export async function updateOrderStatus(orderId: string, status: OrderStatus, actorUserId: string) {
   const existing = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
-  const order = await prisma.order.update({
-    where: { id: orderId },
-    data: { status },
-    include: orderInclude,
-  });
-  await prisma.activityLog.create({
-    data: { actorUserId, action: "order.status_updated", resourceType: "order", resourceId: orderId, oldValue: { status: existing.status }, newValue: { status } },
+  const allowed: Record<OrderStatus, OrderStatus[]> = {
+    PENDING: ["CANCELLED"], CONFIRMED: ["PROCESSING", "CANCELLED"], PROCESSING: ["SHIPPED", "CANCELLED"],
+    SHIPPED: ["DELIVERED"], DELIVERED: [], CANCELLED: [],
+  };
+  if (!allowed[existing.status].includes(status)) throw HttpError.conflict(`Illegal order status transition: ${existing.status} -> ${status}`);
+  if (status === "CANCELLED" && existing.status !== "PENDING") throw HttpError.conflict("Paid-order cancellation requires a refund workflow");
+  const order = await prisma.$transaction(async (tx) => {
+    if (status === "CANCELLED") {
+      const reservations = await tx.stockReservation.findMany({ where: { orderId, status: "ACTIVE" } });
+      for (const reservation of reservations) {
+        const claimed = await tx.stockReservation.updateMany({ where: { id: reservation.id, status: "ACTIVE" }, data: { status: "RELEASED" } });
+        if (claimed.count === 1) await tx.inventory.update({ where: { variantId: reservation.variantId }, data: { reservedQuantity: { decrement: reservation.quantity } } });
+      }
+    }
+    const updated = await tx.order.update({ where: { id: orderId }, data: { status }, include: orderInclude });
+    await tx.activityLog.create({ data: { actorUserId, action: "order.status_updated", resourceType: "order", resourceId: orderId, oldValue: { status: existing.status }, newValue: { status } } });
+    return updated;
   });
   return mapOrder(order);
 }

@@ -27,8 +27,11 @@ export interface VerifyPaymentResult {
 }
 
 export interface WebhookEvent {
+  eventId: string;
   providerRef: string;
   status: VerifiedPaymentStatus;
+  amount: number;
+  currency: string;
   rawPayload: unknown;
 }
 

@@ -31,8 +31,9 @@ interface PaystackVerifyResponse {
 }
 
 interface PaystackWebhookPayload {
+  id?: number;
   event: string;
-  data: { reference: string; status: "success" | "failed" | "abandoned"; amount: number; currency: string };
+  data: { id?: number; reference: string; status: "success" | "failed" | "abandoned"; amount: number; currency: string };
 }
 
 function mapStatus(status: "success" | "failed" | "abandoned"): "verified" | "pending" | "failed" {
@@ -92,6 +93,6 @@ export const paystackProvider: PaymentProvider = {
     if (!match) throw HttpError.unauthorized("Invalid webhook signature");
 
     const payload = JSON.parse(rawBody.toString("utf8")) as PaystackWebhookPayload;
-    return { providerRef: payload.data.reference, status: mapStatus(payload.data.status), rawPayload: payload };
+    return { eventId: String(payload.data.id ?? payload.id ?? `${payload.event}:${payload.data.reference}:${payload.data.status}`), providerRef: payload.data.reference, status: mapStatus(payload.data.status), amount: payload.data.amount / 100, currency: payload.data.currency, rawPayload: payload };
   },
 };

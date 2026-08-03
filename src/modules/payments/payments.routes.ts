@@ -12,7 +12,7 @@ paymentsRouter.post("/webhook", express.raw({ type: "application/json" }), async
   const provider = getActivePaymentProvider();
   const signature = req.headers[provider.webhookSignatureHeader];
   const event = provider.parseWebhook(req.body, Array.isArray(signature) ? signature[0] : signature);
-  await reconcilePaymentStatus(event.providerRef, event.status);
+  await reconcilePaymentStatus(provider.name, event);
   // Acknowledge immediately; providers retry on anything but a prompt 2xx.
   return ok(res, { received: true });
 });
@@ -20,6 +20,6 @@ paymentsRouter.post("/webhook", express.raw({ type: "application/json" }), async
 // Fallback for when a webhook is delayed or dropped, per the "never rely on a
 // single delivery mechanism" rule — the client can poll this after redirect.
 paymentsRouter.get("/orders/:orderId/status", authGuard, async (req, res) => {
-  const payment = await getPaymentStatusForOrder(req.params.orderId as string);
+  const payment = await getPaymentStatusForOrder(req.params.orderId as string, req.user!);
   return ok(res, { status: payment.status, provider: payment.provider });
 });

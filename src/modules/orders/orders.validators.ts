@@ -14,7 +14,6 @@ export const createOrderSchema = z.object({
   }),
   deliveryMethod: z.enum(["standard", "express", "pickup"]),
   notes: z.string().optional(),
-  couponCode: z.string().optional(),
 });
 
 export const updateOrderStatusSchema = z.object({

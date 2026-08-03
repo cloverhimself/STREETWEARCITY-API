@@ -66,9 +66,9 @@ export const bachsProvider: PaymentProvider = {
     const match = provided.length === expected.length && crypto.timingSafeEqual(provided, Buffer.from(expected));
     if (!match) throw HttpError.unauthorized("Invalid webhook signature");
 
-    const payload = JSON.parse(rawBody.toString("utf8")) as { data: { id: string; status: string } };
+    const payload = JSON.parse(rawBody.toString("utf8")) as { id?: string; data: { id: string; status: string; amount: number; currency: string } };
     const status = payload.data.status === "paid" ? "verified" : payload.data.status === "failed" ? "failed" : "pending";
 
-    return { providerRef: payload.data.id, status, rawPayload: payload };
+    return { eventId: payload.id ?? `${payload.data.id}:${payload.data.status}`, providerRef: payload.data.id, status, amount: payload.data.amount, currency: payload.data.currency, rawPayload: payload };
   },
 };

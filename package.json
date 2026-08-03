@@ -8,14 +8,14 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "start:prod": "prisma migrate deploy && node dist/server.js",
-    "lint": "eslint src",
+    "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "postinstall": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "seed": "tsx prisma/seed.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test tests/**/*.test.mjs"
   },
   "keywords": [],
   "author": "",

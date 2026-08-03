@@ -7,17 +7,15 @@ import { logger } from "../../lib/logger";
 // on it once that TTL passes.
 export async function releaseExpiredReservations() {
   const expired = await prisma.stockReservation.findMany({
-    where: { status: "active", expiresAt: { lt: new Date() } },
+    where: { status: "ACTIVE", expiresAt: { lt: new Date() } },
   });
 
   for (const reservation of expired) {
-    await prisma.$transaction([
-      prisma.inventory.update({
-        where: { variantId: reservation.variantId },
-        data: { reservedQuantity: { decrement: reservation.quantity } },
-      }),
-      prisma.stockReservation.update({ where: { id: reservation.id }, data: { status: "expired" } }),
-    ]);
+    await prisma.$transaction(async (tx) => {
+      const claimed = await tx.stockReservation.updateMany({ where: { id: reservation.id, status: "ACTIVE" }, data: { status: "EXPIRED" } });
+      if (claimed.count !== 1) return;
+      await tx.$executeRaw`UPDATE "inventory" SET "reservedQuantity" = "reservedQuantity" - ${reservation.quantity}, "updatedAt" = NOW() WHERE "variantId" = ${reservation.variantId} AND "reservedQuantity" >= ${reservation.quantity}`;
+    });
   }
 
   if (expired.length > 0) {

@@ -3,8 +3,9 @@ import { authGuard } from "../../middleware/auth-guard";
 import { authRateLimit } from "../../middleware/rate-limit";
 import { HttpError } from "../../utils/http-error";
 import { ok } from "../../utils/api-response";
-import { getCurrentUser, login, refreshTokens, register, requestPasswordReset, resetPassword, verifyEmail } from "./auth.service";
-import { loginSchema, refreshTokenSchema, registerSchema, requestPasswordResetSchema, resetPasswordSchema, verifyEmailSchema } from "./auth.validators";
+import { clearAuthCookies, mintCsrfCookie, requireCookieRefreshToken, requireCsrf, setAuthCookies } from "../../lib/auth-cookies";
+import { getCurrentUser, login, refreshTokens, register, requestPasswordReset, resetPassword, revokeRefreshToken, verifyEmail } from "./auth.service";
+import { loginSchema, registerSchema, requestPasswordResetSchema, resetPasswordSchema, verifyEmailSchema } from "./auth.validators";
 
 export const authRouter = Router();
 
@@ -25,13 +26,31 @@ authRouter.post("/verify-email", async (req, res) => {
 authRouter.post("/login", async (req, res) => {
   const { email, password } = loginSchema.parse(req.body);
   const { user, tokens } = await login(email, password);
-  return ok(res, { user: { id: user.id, email: user.email }, ...tokens });
+  const csrfToken = setAuthCookies(res, tokens.refreshToken);
+  return ok(res, { user: { id: user.id, email: user.email }, accessToken: tokens.accessToken, roles: tokens.roles, permissions: tokens.permissions, csrfToken });
+});
+
+// Session bootstrap only: proves that the browser still holds a refresh
+// cookie and mints a readable CSRF token. It deliberately does not call the
+// auth service, rotate the refresh token, or touch RefreshSession state.
+authRouter.get("/csrf", (req, res) => {
+  requireCookieRefreshToken(req);
+  return ok(res, { csrfToken: mintCsrfCookie(res) });
 });
 
 authRouter.post("/refresh", async (req, res) => {
-  const { refreshToken } = refreshTokenSchema.parse(req.body);
+  requireCsrf(req);
+  const refreshToken = requireCookieRefreshToken(req);
   const { user, tokens } = await refreshTokens(refreshToken);
-  return ok(res, { user: { id: user.id, email: user.email }, ...tokens });
+  const csrfToken = setAuthCookies(res, tokens.refreshToken);
+  return ok(res, { user: { id: user.id, email: user.email }, accessToken: tokens.accessToken, roles: tokens.roles, permissions: tokens.permissions, csrfToken });
+});
+
+authRouter.post("/logout", async (req, res) => {
+  requireCsrf(req);
+  await revokeRefreshToken(requireCookieRefreshToken(req));
+  clearAuthCookies(res);
+  return ok(res, { loggedOut: true });
 });
 
 authRouter.get("/me", authGuard, async (req, res) => {

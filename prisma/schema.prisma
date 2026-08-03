@@ -30,8 +30,27 @@ model User {
   notifications      Notification[]
   activityLogs       ActivityLog[]
   verificationTokens VerificationToken[]
+  refreshSessions    RefreshSession[]
 
   @@map("users")
+}
+
+model RefreshSession {
+  id               String    @id @default(uuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  familyId         String
+  tokenHash        String    @unique
+  expiresAt        DateTime
+  rotatedAt        DateTime?
+  revokedAt        DateTime?
+  replacedByHash   String?
+  createdAt        DateTime  @default(now())
+  lastUsedAt       DateTime?
+
+  @@index([userId])
+  @@index([familyId])
+  @@map("refresh_sessions")
 }
 
 model Profile {
@@ -209,11 +228,18 @@ model StockReservation {
   orderId   String?
   order     Order?         @relation(fields: [orderId], references: [id])
   quantity  Int
-  status    String         @default("active")
+  status    ReservationStatus @default(ACTIVE)
   expiresAt DateTime
   createdAt DateTime       @default(now())
 
   @@map("stock_reservations")
+}
+
+enum ReservationStatus {
+  ACTIVE
+  CONSUMED
+  RELEASED
+  EXPIRED
 }
 
 // ---------------------------------------------------------------------------
@@ -276,7 +302,23 @@ model Payment {
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
+  webhookEvents  PaymentWebhookEvent[]
+
+  @@unique([provider, providerRef])
   @@map("payments")
+}
+
+model PaymentWebhookEvent {
+  id              String   @id @default(uuid())
+  provider        String
+  providerEventId String
+  paymentId       String?
+  payment         Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  payload         Json?
+  createdAt       DateTime @default(now())
+
+  @@unique([provider, providerEventId])
+  @@map("payment_webhook_events")
 }
 
 // ---------------------------------------------------------------------------

@@ -14,13 +14,13 @@ export function signAccessToken(payload: AccessTokenPayload): string {
 }
 
 export function signRefreshToken(userId: string): string {
-  return jwt.sign({ sub: userId }, env.JWT_REFRESH_SECRET, { expiresIn: env.JWT_REFRESH_EXPIRES_IN as jwt.SignOptions["expiresIn"] });
+  return jwt.sign({ sub: userId }, env.JWT_REFRESH_SECRET, { expiresIn: env.JWT_REFRESH_EXPIRES_IN as jwt.SignOptions["expiresIn"], algorithm: "HS256" });
 }
 
 export function verifyAccessToken(token: string): AccessTokenPayload {
   return jwt.verify(token, env.JWT_ACCESS_SECRET) as AccessTokenPayload;
 }
 
-export function verifyRefreshToken(token: string): { sub: string } {
-  return jwt.verify(token, env.JWT_REFRESH_SECRET) as { sub: string };
+export function verifyRefreshToken(token: string): { sub: string; exp: number } {
+  return jwt.verify(token, env.JWT_REFRESH_SECRET, { algorithms: ["HS256"] }) as { sub: string; exp: number };
 }
