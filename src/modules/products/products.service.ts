@@ -171,3 +171,12 @@ export async function deleteProduct(id: string, actorUserId: string) {
     data: { actorUserId, action: "product.deleted", resourceType: "product", resourceId: id, oldValue: { name: existing.name } },
   });
 }
+
+// Cart lines identify a variant by color+size, not variantId (the frontend
+// never learns variant IDs — it only knows products, colors, and sizes).
+export async function findVariant(productId: string, color: string, size: string) {
+  return prisma.productVariant.findFirst({
+    where: { productId, color, size, product: { deletedAt: null } },
+    include: { inventory: true, product: { select: { id: true, name: true, price: true } } },
+  });
+}
