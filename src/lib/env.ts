@@ -12,13 +12,19 @@ const envSchema = z.object({
   JWT_ACCESS_EXPIRES_IN: z.string().default("15m"),
   JWT_REFRESH_EXPIRES_IN: z.string().default("30d"),
 
-  PAYMENT_PROVIDER: z.string().default("bachs"),
+  PAYMENT_PROVIDER: z.string().default("paystack"),
   BACHS_SECRET_KEY: z.string().optional(),
   BACHS_PUBLIC_KEY: z.string().optional(),
   BACHS_WEBHOOK_SECRET: z.string().optional(),
+  PAYSTACK_SECRET_KEY: z.string().optional(),
+  PAYSTACK_PUBLIC_KEY: z.string().optional(),
 
   SENDBYTE_API_KEY: z.string().optional(),
   SENDBYTE_FROM_EMAIL: z.string().optional(),
+
+  CLOUDINARY_CLOUD_NAME: z.string().optional(),
+  CLOUDINARY_API_KEY: z.string().optional(),
+  CLOUDINARY_API_SECRET: z.string().optional(),
 
   CLIENT_ORIGIN: z.string().default("http://localhost:3000"),
 });

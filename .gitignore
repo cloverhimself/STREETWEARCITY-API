@@ -2,5 +2,9 @@ node_modules/
 dist/
 .env
 .env.local
+.env.*
 *.log
 .DS_Store
+
+# Internal planning/context docs — not for the client repo, ours only.
+docs/
