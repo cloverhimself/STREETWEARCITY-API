@@ -180,6 +180,7 @@ model ProductVariant {
   colorHex  String
   size      String
   sku       String  @unique
+  isActive  Boolean @default(true)
 
   inventory         Inventory?
   orderItems        OrderItem[]

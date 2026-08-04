@@ -29,8 +29,9 @@ function generateSku(name: string): string {
 }
 
 function mapProduct(product: ProductWithRelations) {
-  const availableStock = product.variants.reduce((sum, v) => sum + (v.inventory ? v.inventory.totalQuantity - v.inventory.reservedQuantity : 0), 0);
-  const colors = [...new Map(product.variants.map((v) => [v.color, { name: v.color, hex: v.colorHex }])).values()];
+  const activeVariants = product.variants.filter((variant) => variant.isActive);
+  const availableStock = activeVariants.reduce((sum, v) => sum + (v.inventory ? v.inventory.totalQuantity - v.inventory.reservedQuantity : 0), 0);
+  const colors = [...new Map(activeVariants.map((v) => [v.color, { name: v.color, hex: v.colorHex }])).values()];
   const images = product.images.map((i) => i.url);
   const isNew = Date.now() - product.createdAt.getTime() < NEW_PRODUCT_WINDOW_MS;
   const badge = availableStock < LOW_STOCK_THRESHOLD ? "Low Stock" : isNew ? "New" : null;
@@ -46,6 +47,15 @@ function mapProduct(product: ProductWithRelations) {
     image: images[0] ?? null,
     images,
     colors,
+    variants: activeVariants.map((variant) => ({
+      id: variant.id,
+      color: variant.color,
+      colorHex: variant.colorHex,
+      size: variant.size,
+      stock: variant.inventory?.totalQuantity ?? 0,
+      reserved: variant.inventory?.reservedQuantity ?? 0,
+      available: variant.inventory ? variant.inventory.totalQuantity - variant.inventory.reservedQuantity : 0,
+    })),
     badge,
     rating: 0,
     reviewCount: 0,
@@ -90,6 +100,16 @@ function buildVariantData(productSku: string, sizeType: string, colors: { name: 
   );
 }
 
+type VariantInput = { color: string; colorHex: string; size: string; stock: number };
+
+function variantKey(color: string, size: string): string {
+  return `${color.trim().toLowerCase()}\0${size.trim().toLowerCase()}`;
+}
+
+function expandLegacyVariants(sizeType: string, colors: { name: string; hex: string }[], stock: number): VariantInput[] {
+  return colors.flatMap((color) => sizesFor(toDbSizeType(sizeType)).map((size) => ({ color: color.name, colorHex: color.hex, size, stock })));
+}
+
 export async function createProduct(input: z.infer<typeof createProductSchema>, actorUserId: string) {
   const categoryId = await resolveCategoryId(input.category);
   const sku = generateSku(input.name);
@@ -105,7 +125,17 @@ export async function createProduct(input: z.infer<typeof createProductSchema>, 
       sizeType: toDbSizeType(input.sizeType),
       categoryId,
       images: { create: input.images.map((url, position) => ({ url, position })) },
-      variants: { create: buildVariantData(sku, input.sizeType, input.colors, input.stock) },
+      variants: {
+        create: input.variants
+          ? input.variants.map((variant) => ({
+              color: variant.color,
+              colorHex: variant.colorHex,
+              size: variant.size,
+              sku: `${sku}-${slugify(variant.color)}-${slugify(variant.size)}`.toUpperCase(),
+              inventory: { create: { totalQuantity: variant.stock, reservedQuantity: 0 } },
+            }))
+          : buildVariantData(sku, input.sizeType, input.colors!, input.stock!),
+      },
     },
     include: productInclude,
   });
@@ -121,14 +151,67 @@ export async function updateProduct(id: string, input: z.infer<typeof updateProd
   const existing = await findProductOrThrow(id);
 
   const categoryId = input.category ? await resolveCategoryId(input.category) : undefined;
-  const variantsChanged = input.colors !== undefined || input.sizeType !== undefined || input.stock !== undefined;
+  const variantsChanged = input.variants !== undefined || input.colors !== undefined || input.sizeType !== undefined || input.stock !== undefined;
 
   const product = await prisma.$transaction(async (tx) => {
     if (variantsChanged) {
-      // No orders reference variants yet at this stage of the project, so a
-      // full replace is safe. Once real order history exists this needs a
-      // real migration strategy instead of delete-and-recreate.
-      await tx.productVariant.deleteMany({ where: { productId: id } });
+      const activeExisting = existing.variants.filter((variant) => variant.isActive);
+      const existingColors = [...new Map(activeExisting.map((variant) => [variant.color, { name: variant.color, hex: variant.colorHex }])).values()];
+      const desired = input.variants ?? expandLegacyVariants(
+        input.sizeType ?? fromDbSizeType(existing.sizeType),
+        input.colors ?? existingColors,
+        input.stock ?? activeExisting[0]?.inventory?.totalQuantity ?? 0
+      );
+      const desiredKeys = new Set(desired.map((variant) => variantKey(variant.color, variant.size)));
+      const existingByKey = new Map(existing.variants.map((variant) => [variantKey(variant.color, variant.size), variant]));
+
+      for (const variant of desired) {
+        const current = existingByKey.get(variantKey(variant.color, variant.size));
+        if (current) {
+          const reserved = current.inventory?.reservedQuantity ?? 0;
+          if (variant.stock < reserved) {
+            throw HttpError.conflict(`Stock for ${variant.color} / ${variant.size} cannot be below ${reserved} reserved units`);
+          }
+          await tx.productVariant.update({
+            where: { id: current.id },
+            data: {
+              color: variant.color,
+              colorHex: variant.colorHex,
+              size: variant.size,
+              isActive: true,
+              inventory: {
+                upsert: {
+                  create: { totalQuantity: variant.stock, reservedQuantity: 0 },
+                  update: { totalQuantity: variant.stock },
+                },
+              },
+            },
+          });
+        } else {
+          await tx.productVariant.create({
+            data: {
+              productId: id,
+              color: variant.color,
+              colorHex: variant.colorHex,
+              size: variant.size,
+              sku: `${existing.sku}-${slugify(variant.color)}-${slugify(variant.size)}`.toUpperCase(),
+              inventory: { create: { totalQuantity: variant.stock, reservedQuantity: 0 } },
+            },
+          });
+        }
+      }
+
+      for (const variant of existing.variants.filter((item) => !desiredKeys.has(variantKey(item.color, item.size)))) {
+        const references = await tx.productVariant.findUniqueOrThrow({
+          where: { id: variant.id },
+          select: { _count: { select: { orderItems: true, stockReservations: true } } },
+        });
+        if (references._count.orderItems > 0 || references._count.stockReservations > 0) {
+          await tx.productVariant.update({ where: { id: variant.id }, data: { isActive: false } });
+        } else {
+          await tx.productVariant.delete({ where: { id: variant.id } });
+        }
+      }
     }
 
     return tx.product.update({
@@ -142,16 +225,6 @@ export async function updateProduct(id: string, input: z.infer<typeof updateProd
         sizeType: input.sizeType ? toDbSizeType(input.sizeType) : undefined,
         categoryId,
         images: input.images ? { deleteMany: {}, create: input.images.map((url, position) => ({ url, position })) } : undefined,
-        variants: variantsChanged
-          ? {
-              create: buildVariantData(
-                existing.sku,
-                input.sizeType ?? fromDbSizeType(existing.sizeType),
-                input.colors ?? existing.variants.map((v) => ({ name: v.color, hex: v.colorHex })),
-                input.stock ?? existing.variants[0]?.inventory?.totalQuantity ?? 0
-              ),
-            }
-          : undefined,
       },
       include: productInclude,
     });
@@ -176,7 +249,7 @@ export async function deleteProduct(id: string, actorUserId: string) {
 // never learns variant IDs — it only knows products, colors, and sizes).
 export async function findVariant(productId: string, color: string, size: string) {
   return prisma.productVariant.findFirst({
-    where: { productId, color, size, product: { deletedAt: null } },
+    where: { productId, color, size, isActive: true, product: { deletedAt: null } },
     include: { inventory: true, product: { select: { id: true, name: true, price: true } } },
   });
 }

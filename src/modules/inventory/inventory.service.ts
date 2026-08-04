@@ -24,7 +24,7 @@ export async function listLowStock(input: { threshold: number; page: number; pag
     FROM "inventory" i
     JOIN "product_variants" v ON v.id = i."variantId"
     JOIN "products" p ON p.id = v."productId"
-    WHERE p."isActive" = true AND p."deletedAt" IS NULL
+    WHERE p."isActive" = true AND p."deletedAt" IS NULL AND v."isActive" = true
       AND i."totalQuantity" - i."reservedQuantity" <= ${input.threshold}
     ORDER BY "availableQuantity" ASC, i."updatedAt" ASC
     LIMIT ${input.pageSize} OFFSET ${offset}
@@ -34,7 +34,7 @@ export async function listLowStock(input: { threshold: number; page: number; pag
     FROM "inventory" i
     JOIN "product_variants" v ON v.id = i."variantId"
     JOIN "products" p ON p.id = v."productId"
-    WHERE p."isActive" = true AND p."deletedAt" IS NULL
+    WHERE p."isActive" = true AND p."deletedAt" IS NULL AND v."isActive" = true
       AND i."totalQuantity" - i."reservedQuantity" <= ${input.threshold}
   `;
   const total = Number(countRows[0]?.count ?? 0);

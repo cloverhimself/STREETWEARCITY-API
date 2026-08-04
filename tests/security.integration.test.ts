@@ -49,6 +49,7 @@ let changeStaffRole: typeof import("../src/modules/admin/admin.service").changeS
 let removeStaff: typeof import("../src/modules/admin/admin.service").removeStaff;
 let resetPassword: typeof import("../src/modules/auth/auth.service").resetPassword;
 let requirePermission: typeof import("../src/middleware/rbac-guard").requirePermission;
+let updateProduct: typeof import("../src/modules/products/products.service").updateProduct;
 
 test.before(async () => {
   ({ login, refreshTokens, register, verifyEmail, requestPasswordReset, resetPassword } = await import("../src/modules/auth/auth.service"));
@@ -63,6 +64,62 @@ test.before(async () => {
   ({ revenueAnalytics, orderTrends, topCustomers, bestSellers } = await import("../src/modules/analytics/analytics.service"));
   ({ inviteStaff, listStaff, changeStaffRole, removeStaff } = await import("../src/modules/admin/admin.service"));
   ({ requirePermission } = await import("../src/middleware/rbac-guard"));
+  ({ updateProduct } = await import("../src/modules/products/products.service"));
+});
+
+test("product variant edits preserve variant identity and inventory history", async () => {
+  const actor = await makeUser(`product-editor-${crypto.randomUUID()}@test.local`);
+  const category = await prisma.category.findUniqueOrThrow({ where: { name: "Headwear" } });
+  const product = await prisma.product.create({
+    data: {
+      sku: `SAFE-${crypto.randomUUID()}`, name: "Safe Variant Edit", price: 50, sizeType: "ADJUSTABLE", categoryId: category.id,
+      variants: { create: [{ color: "Black", colorHex: "#000000", size: "One Size (Adjustable)", sku: `SAFE-V-${crypto.randomUUID()}`, inventory: { create: { totalQuantity: 8, reservedQuantity: 2 } } }] },
+    },
+    include: { variants: { include: { inventory: true } } },
+  });
+  const original = product.variants[0];
+  await prisma.inventoryLog.create({ data: { inventoryId: original.inventory!.id, delta: 8, reason: "initial" } });
+
+  await updateProduct(product.id, { variants: [{ color: "Black", colorHex: "#111111", size: "One Size (Adjustable)", stock: 10 }] }, actor.id);
+
+  const edited = await prisma.productVariant.findUniqueOrThrow({ where: { id: original.id }, include: { inventory: { include: { logs: true } } } });
+  assert.equal(edited.id, original.id);
+  assert.equal(edited.colorHex, "#111111");
+  assert.equal(edited.inventory!.id, original.inventory!.id);
+  assert.equal(edited.inventory!.totalQuantity, 10);
+  assert.equal(edited.inventory!.reservedQuantity, 2);
+  assert.equal(edited.inventory!.logs.length, 1);
+  await assert.rejects(
+    () => updateProduct(product.id, { variants: [{ color: "Black", colorHex: "#111111", size: "One Size (Adjustable)", stock: 1 }] }, actor.id),
+    /cannot be below 2 reserved units/i
+  );
+});
+
+test("removing product variants retires referenced rows and deletes unused rows", async () => {
+  const actor = await makeUser(`product-retire-${crypto.randomUUID()}@test.local`);
+  const customer = await makeUser(`product-buyer-${crypto.randomUUID()}@test.local`);
+  const category = await prisma.category.findUniqueOrThrow({ where: { name: "Headwear" } });
+  const product = await prisma.product.create({
+    data: {
+      sku: `RETIRE-${crypto.randomUUID()}`, name: "Retired Variant", price: 60, sizeType: "ADJUSTABLE", categoryId: category.id,
+      variants: { create: [
+        { color: "Black", colorHex: "#000000", size: "One Size (Adjustable)", sku: `RETIRE-B-${crypto.randomUUID()}`, inventory: { create: { totalQuantity: 4 } } },
+        { color: "Blue", colorHex: "#0000ff", size: "One Size (Adjustable)", sku: `RETIRE-U-${crypto.randomUUID()}`, inventory: { create: { totalQuantity: 3 } } },
+      ] },
+    }, include: { variants: true },
+  });
+  const referenced = product.variants.find((variant) => variant.color === "Black")!;
+  const unused = product.variants.find((variant) => variant.color === "Blue")!;
+  const address = await prisma.address.create({ data: { userId: customer.id, label: "Test", firstName: "Test", lastName: "Buyer", phone: "08000000000", line1: "1 Test Road", city: "Lagos", state: "Lagos", zip: "100001" } });
+  await prisma.order.create({ data: { orderNumber: `SAFE-${crypto.randomUUID()}`, userId: customer.id, subtotal: 60, deliveryFee: 0, total: 60, shippingAddressId: address.id, items: { create: [{ productId: product.id, variantId: referenced.id, quantity: 1, unitPrice: 60 }] } } });
+
+  await updateProduct(product.id, { variants: [{ color: "Red", colorHex: "#ff0000", size: "One Size (Adjustable)", stock: 5 }] }, actor.id);
+
+  assert.equal((await prisma.productVariant.findUniqueOrThrow({ where: { id: referenced.id } })).isActive, false);
+  assert.equal(await prisma.productVariant.findUnique({ where: { id: unused.id } }), null);
+  assert.equal(await prisma.orderItem.count({ where: { variantId: referenced.id } }), 1);
+  const active = await prisma.productVariant.findMany({ where: { productId: product.id, isActive: true } });
+  assert.deepEqual(active.map((variant) => variant.color), ["Red"]);
 });
 
 async function makeUser(email: string) {
