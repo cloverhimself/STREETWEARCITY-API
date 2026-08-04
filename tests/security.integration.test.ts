@@ -35,6 +35,7 @@ let minorUnitsToDecimal: typeof import("../src/lib/money").minorUnitsToDecimal;
 let moneyMatches: typeof import("../src/lib/money").moneyMatches;
 let listLowStock: typeof import("../src/modules/inventory/inventory.service").listLowStock;
 let restockVariant: typeof import("../src/modules/inventory/inventory.service").restockVariant;
+let listActivityLogs: typeof import("../src/modules/activity-logs/activity-logs.service").listActivityLogs;
 let requirePermission: typeof import("../src/middleware/rbac-guard").requirePermission;
 
 test.before(async () => {
@@ -45,6 +46,7 @@ test.before(async () => {
   ({ releaseExpiredReservations, listLowStock, restockVariant } = await import("../src/modules/inventory/inventory.service"));
   ({ paystackProvider } = await import("../src/modules/payments/providers/paystack/paystack.provider"));
   ({ toMinorUnits, fromMinorUnits, minorUnitsToDecimal, moneyMatches } = await import("../src/lib/money"));
+  ({ listActivityLogs } = await import("../src/modules/activity-logs/activity-logs.service"));
   ({ requirePermission } = await import("../src/middleware/rbac-guard"));
 });
 
@@ -351,6 +353,36 @@ test("restocking increments total stock without touching reservations and writes
   const logs = await prisma.inventoryLog.findMany({ where: { inventoryId: product.variants[0].inventory!.id, reason: "restock" } });
   assert.equal(logs.length, 1);
   assert.deepEqual({ delta: logs[0].delta, actorUserId: logs[0].actorUserId }, { delta: 8, actorUserId: actor.id });
+});
+
+test("activity logs filter and paginate newest-first with actor context", async () => {
+  const actor = await makeUser(`logs-actor-${crypto.randomUUID()}@test.local`);
+  const marker = crypto.randomUUID();
+  const older = await prisma.activityLog.create({ data: { actorUserId: actor.id, action: `product.updated.${marker}`, resourceType: "product", resourceId: "older", oldValue: { name: "Old" }, newValue: { name: "New" }, createdAt: new Date(Date.now() - 2_000) } });
+  const newer = await prisma.activityLog.create({ data: { actorUserId: actor.id, action: `product.updated.${marker}`, resourceType: "product", resourceId: "newer", createdAt: new Date(Date.now() - 1_000) } });
+  await prisma.activityLog.create({ data: { actorUserId: actor.id, action: `order.status.${marker}`, resourceType: "order", resourceId: "unrelated" } });
+
+  const pageOne = await listActivityLogs({ action: `product.updated.${marker}`, resourceType: "product", actorUserId: actor.id, page: 1, pageSize: 1 });
+  assert.deepEqual(pageOne.pagination, { page: 1, pageSize: 1, total: 2, totalPages: 2 });
+  assert.equal(pageOne.items[0].id, newer.id);
+  assert.equal(pageOne.items[0].actor?.email, actor.email);
+  assert.equal(pageOne.items[0].actor?.profile?.firstName, "Test");
+
+  const pageTwo = await listActivityLogs({ action: `product.updated.${marker}`, resourceType: "product", actorUserId: actor.id, page: 2, pageSize: 1 });
+  assert.equal(pageTwo.items[0].id, older.id);
+  const ranged = await listActivityLogs({ page: 1, pageSize: 10, from: new Date(Date.now() - 1_500), to: new Date() });
+  assert.equal(ranged.items.some((item) => item.id === older.id), false);
+  assert.equal(ranged.items.some((item) => item.id === newer.id), true);
+});
+
+test("activity-log reads require logs.view permission", async () => {
+  const middleware = requirePermission("logs.view");
+  const customerRequest = { user: { sub: crypto.randomUUID(), roles: ["customer"], permissions: [] } };
+  assert.throws(() => middleware(customerRequest as never, {} as never, () => undefined), /Missing permission: logs\.view/);
+  let allowed = false;
+  const adminRequest = { user: { sub: crypto.randomUUID(), roles: ["super_admin"], permissions: ["logs.view"] } };
+  middleware(adminRequest as never, {} as never, () => { allowed = true; });
+  assert.equal(allowed, true);
 });
 
 test("replayed verified webhook fulfills inventory exactly once", async () => {

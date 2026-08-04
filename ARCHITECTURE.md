@@ -58,7 +58,7 @@ Implemented:
 
 Still stubbed or incomplete:
 
-- `activity-logs` routes: list/filter/pagination; writes already occur from implemented admin actions.
+- `activity-logs`: permission-gated filtering, actor context, date ranges, and pagination; writes occur from implemented admin actions.
 - `analytics`: revenue, orders, customers, and best-seller aggregations.
 - `admin`: staff invite, role changes, listing, and removal.
 - `notifications`: order lifecycle email and in-app notification reads.
