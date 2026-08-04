@@ -21,7 +21,6 @@ let refreshTokens: typeof import("../src/modules/auth/auth.service").refreshToke
 let register: typeof import("../src/modules/auth/auth.service").register;
 let verifyEmail: typeof import("../src/modules/auth/auth.service").verifyEmail;
 let requestPasswordReset: typeof import("../src/modules/auth/auth.service").requestPasswordReset;
-let resetPassword: typeof import("../src/modules/auth/auth.service").resetPassword;
 let drainTestEmailOutbox: typeof import("../src/lib/sendbyte").drainTestEmailOutbox;
 let createOrder: typeof import("../src/modules/orders/orders.service").createOrder;
 let initializePaymentForOrder: typeof import("../src/modules/payments/payments.service").initializePaymentForOrder;
@@ -44,6 +43,11 @@ let revenueAnalytics: typeof import("../src/modules/analytics/analytics.service"
 let orderTrends: typeof import("../src/modules/analytics/analytics.service").orderTrends;
 let topCustomers: typeof import("../src/modules/analytics/analytics.service").topCustomers;
 let bestSellers: typeof import("../src/modules/analytics/analytics.service").bestSellers;
+let inviteStaff: typeof import("../src/modules/admin/admin.service").inviteStaff;
+let listStaff: typeof import("../src/modules/admin/admin.service").listStaff;
+let changeStaffRole: typeof import("../src/modules/admin/admin.service").changeStaffRole;
+let removeStaff: typeof import("../src/modules/admin/admin.service").removeStaff;
+let resetPassword: typeof import("../src/modules/auth/auth.service").resetPassword;
 let requirePermission: typeof import("../src/middleware/rbac-guard").requirePermission;
 
 test.before(async () => {
@@ -57,6 +61,7 @@ test.before(async () => {
   ({ listActivityLogs } = await import("../src/modules/activity-logs/activity-logs.service"));
   ({ listNotifications, markNotificationRead, markAllNotificationsRead } = await import("../src/modules/notifications/notifications.service"));
   ({ revenueAnalytics, orderTrends, topCustomers, bestSellers } = await import("../src/modules/analytics/analytics.service"));
+  ({ inviteStaff, listStaff, changeStaffRole, removeStaff } = await import("../src/modules/admin/admin.service"));
   ({ requirePermission } = await import("../src/middleware/rbac-guard"));
 });
 
@@ -336,8 +341,8 @@ test("low-stock listing uses available quantity and paginates active variants", 
     include: { variants: true },
   });
 
-  const result = await listLowStock({ threshold: 4, page: 1, pageSize: 100 });
-  const ownRows = result.items.filter((item) => item.productId === product.id);
+  const result = await listLowStock({ threshold: 4, page: 1, pageSize: 100_000 });
+  const ownRows = result.items.filter((item) => item.productName === `Low Stock ${suffix}`);
   assert.equal(ownRows.length, 1);
   assert.deepEqual({ color: ownRows[0].color, total: ownRows[0].totalQuantity, reserved: ownRows[0].reservedQuantity, available: ownRows[0].availableQuantity }, { color: "Low", total: 7, reserved: 3, available: 4 });
   assert.ok(result.pagination.total >= 1);
@@ -462,7 +467,7 @@ test("analytics aggregate only completed payments and rank customers and product
   await createAnalyticsOrder(customerB.id, `ANB-${crypto.randomUUID()}`, "COMPLETED", [{ product: products[1], qty: 1, price: 40 }], 40, now);
   await createAnalyticsOrder(customerB.id, `ANC-${crypto.randomUUID()}`, "PROCESSING", [{ product: products[1], qty: 10, price: 40 }], 400, now);
 
-  const markerNames = new Set(products.map((product) => product.name));
+  const markerSkus = new Set(products.map((product) => product.sku));
   const revenue = await revenueAnalytics({ from: start, to: new Date(now.getTime() + 1_000), interval: "day" });
   assert.ok(revenue.some((row) => row.revenue >= 115 && row.orders >= 2));
   const trends = await orderTrends({ from: start, to: new Date(now.getTime() + 1_000), interval: "day" });
@@ -472,7 +477,7 @@ test("analytics aggregate only completed payments and rank customers and product
   const ownCustomers = customers.filter((row) => row.userId === customerA.id || row.userId === customerB.id);
   assert.deepEqual(ownCustomers.map((row) => ({ userId: row.userId, spent: row.spent })), [{ userId: customerA.id, spent: 75 }, { userId: customerB.id, spent: 40 }]);
   const sellers = await bestSellers({ from: start, to: new Date(now.getTime() + 1_000), limit: 100 });
-  const ownSellers = sellers.filter((row) => markerNames.has(row.name));
+  const ownSellers = sellers.filter((row) => markerSkus.has(row.sku));
   assert.deepEqual(ownSellers.map((row) => ({ name: row.name, unitsSold: row.unitsSold, revenue: row.revenue })), [{ name: "Analytics Bestseller", unitsSold: 3, revenue: 75 }, { name: "Analytics Runner Up", unitsSold: 1, revenue: 40 }]);
 });
 
@@ -482,6 +487,53 @@ test("analytics reads require analytics.view permission", () => {
   let allowed = false;
   middleware({ user: { sub: crypto.randomUUID(), roles: ["finance_manager"], permissions: ["analytics.view"] } } as never, {} as never, () => { allowed = true; });
   assert.equal(allowed, true);
+});
+
+test("staff invite lifecycle uses a single-use password link, roles, audit logs, and safety guards", async () => {
+  drainTestEmailOutbox();
+  const actor = await makeUser(`staff-admin-${crypto.randomUUID()}@test.local`);
+  const invitedEmail = `invited-${crypto.randomUUID()}@test.local`;
+  const invited = await inviteStaff({ email: invitedEmail, firstName: "Invited", lastName: "Staff", role: "product_manager" }, actor.id);
+  assert.equal(invited.email, invitedEmail);
+  const inviteMessages = drainTestEmailOutbox();
+  assert.equal(inviteMessages.length, 1);
+  assert.match(inviteMessages[0].subject, /invited/i);
+  const token = inviteMessages[0].html.match(/reset-password\?token=([a-f0-9]{64})/)?.[1];
+  assert.match(token ?? "", /^[a-f0-9]{64}$/);
+
+  const listed = await listStaff({ page: 1, pageSize: 100 });
+  const listedInvite = listed.items.find((item) => item.id === invited.id);
+  assert.deepEqual({ email: listedInvite?.email, roles: listedInvite?.roles, verified: listedInvite?.emailVerified }, { email: invitedEmail, roles: ["product_manager"], verified: true });
+  await resetPassword(token!, "InvitedPassword123!");
+  await login(invitedEmail, "InvitedPassword123!");
+  await assert.rejects(() => resetPassword(token!, "AnotherPassword456!"), /invalid or expired/i);
+
+  const changed = await changeStaffRole(invited.id, "inventory_manager", actor.id);
+  assert.deepEqual(changed.roles, ["inventory_manager"]);
+  const roleLog = await prisma.activityLog.findFirstOrThrow({ where: { action: "admin.role_updated", resourceId: invited.id }, orderBy: { createdAt: "desc" } });
+  assert.deepEqual(roleLog.newValue, { roles: ["inventory_manager"] });
+  await assert.rejects(() => removeStaff(actor.id, actor.id), /cannot remove your own/i);
+  await removeStaff(invited.id, actor.id);
+  const removed = await prisma.user.findUniqueOrThrow({ where: { id: invited.id } });
+  assert.ok(removed.deletedAt);
+  assert.equal((await listStaff({ page: 1, pageSize: 100 })).items.some((item) => item.id === invited.id), false);
+
+  const superA = await makeUser(`super-a-${crypto.randomUUID()}@test.local`);
+  const superB = await makeUser(`super-b-${crypto.randomUUID()}@test.local`);
+  const superRole = await prisma.role.findUniqueOrThrow({ where: { name: "super_admin" } });
+  const inventoryRole = await prisma.role.findUniqueOrThrow({ where: { name: "inventory_manager" } });
+  const existingSupers = await prisma.userRole.findMany({ where: { roleId: superRole.id, userId: { notIn: [superA.id, superB.id] } } });
+  for (const existing of existingSupers) {
+    await prisma.userRole.deleteMany({ where: { userId: existing.userId } });
+    await prisma.userRole.create({ data: { userId: existing.userId, roleId: inventoryRole.id } });
+  }
+  await prisma.userRole.deleteMany({ where: { userId: superA.id } });
+  await prisma.userRole.deleteMany({ where: { userId: superB.id } });
+  await prisma.userRole.createMany({ data: [{ userId: superA.id, roleId: superRole.id }, { userId: superB.id, roleId: superRole.id }] });
+  await changeStaffRole(superA.id, "inventory_manager", actor.id);
+  await changeStaffRole(superA.id, "super_admin", actor.id);
+  await removeStaff(superB.id, actor.id);
+  await assert.rejects(() => removeStaff(superA.id, actor.id), /super admin/i);
 });
 
 test("replayed verified webhook fulfills inventory exactly once", async () => {

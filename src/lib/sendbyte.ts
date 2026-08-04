@@ -48,6 +48,11 @@ export function sendPasswordResetEmail(to: string, token: string) {
   );
 }
 
+export function sendStaffInviteEmail(to: string, token: string, role: string) {
+  const link = `${env.CLIENT_ORIGIN}/reset-password?token=${token}`;
+  return send(to, "You're invited to Streetwear City", `<p>You were invited to the Streetwear City admin team as <strong>${role}</strong>.</p><p><a href="${link}">Set your password</a></p><p>This single-use link expires in 30 minutes.</p>`);
+}
+
 export function sendOrderStatusEmail(to: string, input: { orderNumber: string; status: "CONFIRMED" | "SHIPPED" | "DELIVERED" }) {
   const copy = {
     CONFIRMED: { subject: `Order ${input.orderNumber} confirmed`, heading: "Payment confirmed", body: "Your payment was confirmed and your order is now being prepared." },

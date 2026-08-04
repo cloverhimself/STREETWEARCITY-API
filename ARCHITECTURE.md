@@ -61,7 +61,7 @@ Still stubbed or incomplete:
 
 - `activity-logs`: permission-gated filtering, actor context, date ranges, and pagination; writes occur from implemented admin actions.
 - `analytics`: revenue, orders, customers, and best-seller aggregations.
-- `admin`: staff invite, role changes, listing, and removal.
+- `admin`: permission-gated staff/role listing, secure set-password invitation, role changes, soft removal, session revocation, and audit/super-admin safety guards.
 - `notifications`: user-scoped list/read endpoints; order confirmation, shipped, and delivered email delivery is best-effort after committed state changes.
 
 ## Authentication and authorization
