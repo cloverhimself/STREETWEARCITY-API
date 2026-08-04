@@ -315,8 +315,9 @@ test("order creation revalidates current database prices and stores exact totals
   await prisma.product.update({ where: { id: product.id }, data: { price: "21.37" } });
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (_input, init) => {
-    const body = JSON.parse(String(init?.body)) as { amount: number; reference: string };
+    const body = JSON.parse(String(init?.body)) as { amount: number; reference: string; callback_url: string };
     assert.equal(body.amount, 7_311);
+    assert.equal(new URL(body.callback_url).searchParams.get("payment_return"), "1");
     return new Response(JSON.stringify({ status: true, message: "Authorization URL created", data: { authorization_url: "https://checkout.test/price", access_code: "access", reference: body.reference } }), { status: 200, headers: { "Content-Type": "application/json" } });
   };
 
@@ -656,8 +657,11 @@ test("failed payment initialization leaves one durable row that retries idempote
   let calls = 0;
   globalThis.fetch = async (_input, init) => {
     calls += 1;
-    const request = JSON.parse(String(init?.body)) as { reference: string; amount: number; currency: string; email: string; metadata: { orderId: string } };
-    assert.deepEqual(request, { reference: `order_${order.id}`, amount: 12_500, currency: "NGN", email: user.email, metadata: { orderId: order.id } });
+    const request = JSON.parse(String(init?.body)) as { reference: string; amount: number; currency: string; email: string; callback_url: string; metadata: { orderId: string } };
+    assert.deepEqual(
+      { ...request, callback_url: new URL(request.callback_url).searchParams.get("payment_return") },
+      { reference: `order_${order.id}`, amount: 12_500, currency: "NGN", email: user.email, callback_url: "1", metadata: { orderId: order.id } }
+    );
     if (calls === 1) return new Response(JSON.stringify({ status: false, message: "temporary provider failure" }), { status: 503, headers: { "Content-Type": "application/json" } });
     return new Response(JSON.stringify({ status: true, message: "Authorization URL created", data: { authorization_url: "https://checkout.test/retry", access_code: "access", reference: request.reference } }), { status: 200, headers: { "Content-Type": "application/json" } });
   };

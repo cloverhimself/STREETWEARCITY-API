@@ -48,6 +48,8 @@ export const paystackProvider: PaymentProvider = {
   webhookSignatureHeader: "x-paystack-signature",
 
   async initialize(input: InitializePaymentInput): Promise<InitializePaymentResult> {
+    const callbackUrl = new URL(env.CLIENT_ORIGIN);
+    callbackUrl.searchParams.set("payment_return", "1");
     const res = await fetch(`${PAYSTACK_API_BASE}/transaction/initialize`, {
       method: "POST",
       headers: paystackHeaders(),
@@ -56,6 +58,7 @@ export const paystackProvider: PaymentProvider = {
         amount: toMinorUnits(input.amount),
         currency: input.currency,
         reference: input.idempotencyKey,
+        callback_url: callbackUrl.toString(),
         metadata: { orderId: input.orderId },
       }),
     });
