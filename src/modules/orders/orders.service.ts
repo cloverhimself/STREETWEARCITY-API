@@ -1,5 +1,6 @@
 import type { OrderStatus, Prisma } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
+import { fromMinorUnits, minorUnitsToDecimal, toMinorUnits } from "../../lib/money";
 import { HttpError } from "../../utils/http-error";
 import { resolveCartLines, type CartLineInput } from "../cart/cart.service";
 import { initializePaymentForOrder } from "../payments/payments.service";
@@ -48,16 +49,16 @@ function mapOrder(order: Prisma.OrderGetPayload<{ include: typeof orderInclude }
       size: it.variant.size,
       quantity: it.quantity,
       unitPrice: Number(it.unitPrice),
-      lineTotal: Number(it.unitPrice) * it.quantity,
+      lineTotal: fromMinorUnits(toMinorUnits(it.unitPrice) * it.quantity),
     })),
     payment: order.payment ? { status: order.payment.status, provider: order.payment.provider } : null,
   };
 }
 
-function deliveryFeeFor(method: string, subtotal: number): number {
-  if (method === "express") return 18;
+function deliveryFeeMinorFor(method: string, subtotalMinor: number): number {
+  if (method === "express") return 1_800;
   if (method === "pickup") return 0;
-  return subtotal > 150 ? 0 : 9;
+  return subtotalMinor > 15_000 ? 0 : 900;
 }
 
 function generateOrderNumber(): string {
@@ -74,13 +75,17 @@ export async function createOrder(userId: string, input: z.infer<typeof createOr
     throw HttpError.badRequest(`Some items in your cart changed: ${detail}`);
   }
 
-  const subtotal = resolved.reduce((sum, l) => sum + l.unitPrice * l.qty, 0);
-  const deliveryFee = deliveryFeeFor(input.deliveryMethod, subtotal);
+  const subtotalMinor = resolved.reduce((sum, line) => sum + toMinorUnits(line.unitPrice) * line.qty, 0);
+  const deliveryFeeMinor = deliveryFeeMinorFor(input.deliveryMethod, subtotalMinor);
   // Matches the storefront's existing demo coupon behavior (any non-empty code = 10% off) —
   // there's no real promotions system yet, this just keeps the total customers see in the
   // cart drawer consistent with what actually gets charged.
-  const discount = 0;
-  const total = Math.max(0, subtotal + deliveryFee - discount);
+  const discountMinor = 0;
+  const totalMinor = Math.max(0, subtotalMinor + deliveryFeeMinor - discountMinor);
+  const subtotal = minorUnitsToDecimal(subtotalMinor);
+  const deliveryFee = minorUnitsToDecimal(deliveryFeeMinor);
+  const discount = minorUnitsToDecimal(discountMinor);
+  const total = minorUnitsToDecimal(totalMinor);
 
   const orderId = await prisma.$transaction(async (tx) => {
     const address = await tx.address.create({
@@ -113,7 +118,7 @@ export async function createOrder(userId: string, input: z.infer<typeof createOr
             productId: l.productId,
             variantId: l.variantId as string,
             quantity: l.qty,
-            unitPrice: l.unitPrice,
+            unitPrice: minorUnitsToDecimal(toMinorUnits(l.unitPrice)),
           })),
         },
       },
@@ -139,7 +144,7 @@ export async function createOrder(userId: string, input: z.infer<typeof createOr
   let paymentError: string | null = null;
   let redirectUrl: string | null = null;
   try {
-    const initialized = await initializePaymentForOrder(orderId, total, user.email);
+    const initialized = await initializePaymentForOrder(orderId, fromMinorUnits(totalMinor), user.email);
     redirectUrl = initialized.redirectUrl;
   } catch (err) {
     // The order and its reservation stay committed regardless — business

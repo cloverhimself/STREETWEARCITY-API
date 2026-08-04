@@ -1,5 +1,6 @@
 import { prisma } from "../../lib/prisma";
 import { logger } from "../../lib/logger";
+import { moneyMatches } from "../../lib/money";
 import { HttpError } from "../../utils/http-error";
 import { getActivePaymentProvider } from "./provider.registry";
 import type { WebhookEvent } from "./provider.interface";
@@ -48,7 +49,7 @@ export async function reconcilePaymentStatus(provider: string, event: WebhookEve
     return null;
   }
 
-  if (Number(payment.amount) !== event.amount || payment.currency !== event.currency) {
+  if (!moneyMatches(payment.amount, event.amount) || payment.currency !== event.currency) {
     logger.error({ paymentId: payment.id, expectedAmount: Number(payment.amount), receivedAmount: event.amount, expectedCurrency: payment.currency, receivedCurrency: event.currency }, "Payment webhook amount/currency mismatch");
     throw HttpError.badRequest("Payment amount or currency mismatch");
   }

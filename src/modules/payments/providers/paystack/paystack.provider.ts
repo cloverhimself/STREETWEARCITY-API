@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { env } from "../../../../lib/env";
+import { fromMinorUnits, toMinorUnits } from "../../../../lib/money";
 import { HttpError } from "../../../../utils/http-error";
 import type { InitializePaymentInput, InitializePaymentResult, PaymentProvider, VerifyPaymentResult, WebhookEvent } from "../../provider.interface";
 
@@ -52,7 +53,7 @@ export const paystackProvider: PaymentProvider = {
       headers: paystackHeaders(),
       body: JSON.stringify({
         email: input.customerEmail,
-        amount: Math.round(input.amount * 100),
+        amount: toMinorUnits(input.amount),
         currency: input.currency,
         reference: input.idempotencyKey,
         metadata: { orderId: input.orderId },
@@ -76,7 +77,7 @@ export const paystackProvider: PaymentProvider = {
     return {
       status: mapStatus(body.data.status),
       providerRef: body.data.reference,
-      amount: body.data.amount / 100,
+      amount: fromMinorUnits(body.data.amount),
       currency: body.data.currency,
     };
   },
@@ -93,6 +94,6 @@ export const paystackProvider: PaymentProvider = {
     if (!match) throw HttpError.unauthorized("Invalid webhook signature");
 
     const payload = JSON.parse(rawBody.toString("utf8")) as PaystackWebhookPayload;
-    return { eventId: String(payload.data.id ?? payload.id ?? `${payload.event}:${payload.data.reference}:${payload.data.status}`), providerRef: payload.data.reference, status: mapStatus(payload.data.status), amount: payload.data.amount / 100, currency: payload.data.currency, rawPayload: payload };
+    return { eventId: String(payload.data.id ?? payload.id ?? `${payload.event}:${payload.data.reference}:${payload.data.status}`), providerRef: payload.data.reference, status: mapStatus(payload.data.status), amount: fromMinorUnits(payload.data.amount), currency: payload.data.currency, rawPayload: payload };
   },
 };

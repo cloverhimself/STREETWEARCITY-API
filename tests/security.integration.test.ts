@@ -29,6 +29,10 @@ let reconcilePaymentStatus: typeof import("../src/modules/payments/payments.serv
 let reconcilePendingPayments: typeof import("../src/modules/payments/payments.service").reconcilePendingPayments;
 let releaseExpiredReservations: typeof import("../src/modules/inventory/inventory.service").releaseExpiredReservations;
 let paystackProvider: typeof import("../src/modules/payments/providers/paystack/paystack.provider").paystackProvider;
+let toMinorUnits: typeof import("../src/lib/money").toMinorUnits;
+let fromMinorUnits: typeof import("../src/lib/money").fromMinorUnits;
+let minorUnitsToDecimal: typeof import("../src/lib/money").minorUnitsToDecimal;
+let moneyMatches: typeof import("../src/lib/money").moneyMatches;
 let requirePermission: typeof import("../src/middleware/rbac-guard").requirePermission;
 
 test.before(async () => {
@@ -38,6 +42,7 @@ test.before(async () => {
   ({ initializePaymentForOrder, reconcilePaymentStatus, reconcilePendingPayments } = await import("../src/modules/payments/payments.service"));
   ({ releaseExpiredReservations } = await import("../src/modules/inventory/inventory.service"));
   ({ paystackProvider } = await import("../src/modules/payments/providers/paystack/paystack.provider"));
+  ({ toMinorUnits, fromMinorUnits, minorUnitsToDecimal, moneyMatches } = await import("../src/lib/money"));
   ({ requirePermission } = await import("../src/middleware/rbac-guard"));
 });
 
@@ -92,6 +97,20 @@ test("Paystack webhook signatures accept only the exact signed raw body", async 
   assert.throws(() => paystackProvider.parseWebhook(Buffer.from(payload), `${signature.slice(0, -1)}0`), /Invalid webhook signature/i);
   assert.throws(() => paystackProvider.parseWebhook(Buffer.from(payload), undefined), /Missing webhook signature/i);
   assert.throws(() => paystackProvider.parseWebhook(Buffer.from(`${payload} `), signature), /Invalid webhook signature/i);
+});
+
+test("money helpers round once at the minor-unit boundary", () => {
+  assert.equal(toMinorUnits("0.10"), 10);
+  assert.equal(toMinorUnits("0.105"), 11);
+  assert.equal(toMinorUnits("10.004"), 1_000);
+  assert.equal(toMinorUnits("10.005"), 1_001);
+  assert.equal(toMinorUnits("-1.005"), -101);
+  assert.equal(fromMinorUnits(12_345), 123.45);
+  assert.equal(minorUnitsToDecimal(12_345), "123.45");
+  assert.equal(minorUnitsToDecimal(-5), "-0.05");
+  assert.equal(moneyMatches("75.00", 75), true);
+  assert.equal(moneyMatches("74.999", 75), true);
+  assert.equal(moneyMatches("74.994", 75), false);
 });
 
 test("expired verification codes are rejected without activating the account", async () => {
