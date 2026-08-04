@@ -33,6 +33,8 @@ let toMinorUnits: typeof import("../src/lib/money").toMinorUnits;
 let fromMinorUnits: typeof import("../src/lib/money").fromMinorUnits;
 let minorUnitsToDecimal: typeof import("../src/lib/money").minorUnitsToDecimal;
 let moneyMatches: typeof import("../src/lib/money").moneyMatches;
+let listLowStock: typeof import("../src/modules/inventory/inventory.service").listLowStock;
+let restockVariant: typeof import("../src/modules/inventory/inventory.service").restockVariant;
 let requirePermission: typeof import("../src/middleware/rbac-guard").requirePermission;
 
 test.before(async () => {
@@ -40,7 +42,7 @@ test.before(async () => {
   ({ drainTestEmailOutbox } = await import("../src/lib/sendbyte"));
   ({ createOrder } = await import("../src/modules/orders/orders.service"));
   ({ initializePaymentForOrder, reconcilePaymentStatus, reconcilePendingPayments } = await import("../src/modules/payments/payments.service"));
-  ({ releaseExpiredReservations } = await import("../src/modules/inventory/inventory.service"));
+  ({ releaseExpiredReservations, listLowStock, restockVariant } = await import("../src/modules/inventory/inventory.service"));
   ({ paystackProvider } = await import("../src/modules/payments/providers/paystack/paystack.provider"));
   ({ toMinorUnits, fromMinorUnits, minorUnitsToDecimal, moneyMatches } = await import("../src/lib/money"));
   ({ requirePermission } = await import("../src/middleware/rbac-guard"));
@@ -302,6 +304,53 @@ test("order creation rolls back every write when a later reservation fails", asy
   assert.deepEqual(after, before);
   const inventory = await prisma.inventory.findUniqueOrThrow({ where: { variantId: product.variants[0].id } });
   assert.deepEqual({ total: inventory.totalQuantity, reserved: inventory.reservedQuantity }, { total: 1, reserved: 0 });
+});
+
+test("low-stock listing uses available quantity and paginates active variants", async () => {
+  const category = await prisma.category.findUniqueOrThrow({ where: { name: "Headwear" } });
+  const suffix = crypto.randomUUID();
+  const product = await prisma.product.create({
+    data: {
+      sku: `LOW-${suffix}`,
+      name: `Low Stock ${suffix}`,
+      price: "10.00",
+      sizeType: "ADJUSTABLE",
+      categoryId: category.id,
+      variants: { create: [
+        { color: "Low", colorHex: "#111111", size: "One Size", sku: `LOW-A-${suffix}`, inventory: { create: { totalQuantity: 7, reservedQuantity: 3 } } },
+        { color: "Healthy", colorHex: "#222222", size: "One Size", sku: `LOW-B-${suffix}`, inventory: { create: { totalQuantity: 10, reservedQuantity: 1 } } },
+      ] },
+    },
+    include: { variants: true },
+  });
+
+  const result = await listLowStock({ threshold: 4, page: 1, pageSize: 100 });
+  const ownRows = result.items.filter((item) => item.productId === product.id);
+  assert.equal(ownRows.length, 1);
+  assert.deepEqual({ color: ownRows[0].color, total: ownRows[0].totalQuantity, reserved: ownRows[0].reservedQuantity, available: ownRows[0].availableQuantity }, { color: "Low", total: 7, reserved: 3, available: 4 });
+  assert.ok(result.pagination.total >= 1);
+});
+
+test("restocking increments total stock without touching reservations and writes an actor log", async () => {
+  const actor = await makeUser(`restock-actor-${crypto.randomUUID()}@test.local`);
+  const category = await prisma.category.findUniqueOrThrow({ where: { name: "Headwear" } });
+  const product = await prisma.product.create({
+    data: {
+      sku: `RESTOCK-${crypto.randomUUID()}`,
+      name: "Restock Test Product",
+      price: "25.00",
+      sizeType: "ADJUSTABLE",
+      categoryId: category.id,
+      variants: { create: [{ color: "Black", colorHex: "#000000", size: "One Size", sku: `RESTOCK-V-${crypto.randomUUID()}`, inventory: { create: { totalQuantity: 5, reservedQuantity: 2 } } }] },
+    },
+    include: { variants: { include: { inventory: true } } },
+  });
+
+  const result = await restockVariant(product.variants[0].id, 8, actor.id);
+  assert.deepEqual({ total: result.totalQuantity, reserved: result.reservedQuantity, available: result.availableQuantity, actor: result.restockedBy }, { total: 13, reserved: 2, available: 11, actor: actor.id });
+  const logs = await prisma.inventoryLog.findMany({ where: { inventoryId: product.variants[0].inventory!.id, reason: "restock" } });
+  assert.equal(logs.length, 1);
+  assert.deepEqual({ delta: logs[0].delta, actorUserId: logs[0].actorUserId }, { delta: 8, actorUserId: actor.id });
 });
 
 test("replayed verified webhook fulfills inventory exactly once", async () => {

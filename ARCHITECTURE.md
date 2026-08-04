@@ -54,11 +54,10 @@ Implemented:
 - `orders`: server-priced checkout, atomic stock reservations, order history, ownership checks, and guarded lifecycle transitions.
 - `payments`: Paystack initialization, signed webhook parsing, idempotent settlement, provider polling/reconciliation, payment-status reads, and operations summary.
 - `uploads`: permission-gated Cloudinary product-image upload.
-- inventory background processing: expired reservation release.
+- `inventory`: low-stock pagination, audited restocking, and expired reservation release.
 
 Still stubbed or incomplete:
 
-- `inventory` routes: low-stock and restock operations.
 - `activity-logs` routes: list/filter/pagination; writes already occur from implemented admin actions.
 - `analytics`: revenue, orders, customers, and best-seller aggregations.
 - `admin`: staff invite, role changes, listing, and removal.
