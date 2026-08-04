@@ -1,4 +1,5 @@
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import { authGuard } from "../../middleware/auth-guard";
 import { requirePermission } from "../../middleware/rbac-guard";
 import { HttpError } from "../../utils/http-error";
@@ -7,10 +8,11 @@ import { createOrder, getOrder, listOrdersForAdmin, listOrdersForUser, updateOrd
 import { adminOrderListSchema, createOrderSchema, updateOrderStatusSchema } from "./orders.validators";
 
 export const ordersRouter = Router();
+const checkoutRateLimit = rateLimit({ windowMs: 60 * 1000, limit: 10, keyGenerator: (req) => req.user!.sub, standardHeaders: true, legacyHeaders: false });
 
 ordersRouter.use(authGuard);
 
-ordersRouter.post("/", async (req, res) => {
+ordersRouter.post("/", checkoutRateLimit, async (req, res) => {
   if (!req.user) throw HttpError.unauthorized();
   const input = createOrderSchema.parse(req.body);
   const result = await createOrder(req.user.sub, input);

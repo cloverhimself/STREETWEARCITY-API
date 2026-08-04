@@ -2,6 +2,7 @@ import { z } from "zod";
 import { cartLineSchema } from "../cart/cart.validators";
 
 export const createOrderSchema = z.object({
+  idempotencyKey: z.string().uuid(),
   items: z.array(cartLineSchema).min(1, "Cart is empty"),
   shipping: z.object({
     first: z.string().min(1),

@@ -57,12 +57,9 @@ Implemented:
 - `uploads`: permission-gated Cloudinary product-image upload.
 - `inventory`: low-stock pagination, audited restocking, and expired reservation release.
 
-Still stubbed or incomplete:
+Still deliberately incomplete:
 
-- `activity-logs`: permission-gated filtering, actor context, date ranges, and pagination; writes occur from implemented admin actions.
-- `analytics`: revenue, orders, customers, and best-seller aggregations.
-- `admin`: permission-gated staff/role listing, secure set-password invitation, role changes, soft removal, session revocation, and audit/super-admin safety guards.
-- `notifications`: user-scoped list/read endpoints; order confirmation, shipped, and delivered email delivery is best-effort after committed state changes.
+- External monitoring/alert delivery and provider settlement-export reconciliation are not implemented for Phase 1; the authenticated operations summary and structured logs expose drift indicators.
 
 ## Authentication and authorization
 
@@ -86,7 +83,7 @@ available = totalQuantity - reservedQuantity
 
 Reservation acquisition uses an atomic SQL predicate, preventing concurrent last-unit overselling. A five-minute background sweep marks expired active reservations as `EXPIRED` and decrements reserved stock.
 
-The admin product form still applies one stock value to every generated color/size variant. Product updates still delete and recreate variants when variant-shaping fields change; that must be replaced before it is considered safe for products referenced by orders.
+The admin product form accepts stock per generated color/size variant. Product updates reconcile variants in place; referenced removals are retired instead of deleting order, reservation, inventory, or log history.
 
 ## Payment lifecycle
 
@@ -94,14 +91,15 @@ The active provider is Paystack. Provider-specific kobo conversion and API detai
 
 Payment initialization:
 
-1. Creates one durable `PENDING` payment with `order_<orderId>` as its idempotency key.
-2. Calls Paystack initialization.
-3. Stores the provider reference and transitions to `PROCESSING`.
-4. A retry reuses the same database row and reference; initialization response alone never confirms an order.
+1. Claims a durable checkout attempt by user/key/request hash before creating order state; exact retries return the original order.
+2. Creates one durable `PENDING` payment with `order_<orderId>` as its idempotency key.
+3. Calls Paystack initialization and stores the authorization URL/error.
+4. If the response is lost, deterministic reference verification (`order_<orderId>`) recovers the payment without a second initialization call.
+5. A retry reuses the same database row and reference; initialization response alone never confirms an order.
 
 Settlement occurs only from verified provider evidence: a signed webhook or reconciliation polling result. Webhook signatures are HMAC-SHA512 over the exact raw request body.
 
-Verified settlement is atomic: webhook-event retention, payment transition, claiming every stock reservation, inventory deduction, sale logs, and order confirmation commit together. If expiry or another process already claimed a reservation, settlement rolls back instead of producing a paid order without stock.
+Signature-valid webhook ingestion is durable before acknowledgement. A recoverable in-process worker claims pending events and performs settlement; unknown references and rejected amount/currency mismatches remain retained evidence. Verified settlement is atomic: payment transition, claiming every stock reservation, inventory deduction, sale logs, and order confirmation commit together. If expiry or another process already claimed a reservation, settlement rolls back instead of producing a paid order without stock.
 
 `reconcilePendingPayments` runs every minute, conditionally claims eligible payments, polls Paystack, and uses bounded exponential backoff. Duplicate webhook and polling events are idempotent through the unique provider-event record and terminal-state guards.
 
@@ -125,12 +123,9 @@ As of 2026-08-04, commit `eb99053` and later verified work are waiting for deplo
 
 GitHub Actions provisions PostgreSQL 17, installs dependencies, validates Prisma, applies all migrations, seeds data, typechecks, runs unit and PostgreSQL integration tests, and builds the API.
 
-The disposable-PostgreSQL integration suite proves registration/verification, login gating, refresh reuse, password-reset revocation, the full seeded RBAC matrix, current-price checkout, transaction rollback, concurrent stock reservation, signed webhooks, webhook replay, amount/currency mismatch protection, initialization retry, reconciliation-worker claiming, and reservation-expiry/payment-settlement races.
+The 29-test disposable-PostgreSQL integration suite proves registration/verification, login gating, refresh reuse, password-reset revocation, the full seeded RBAC matrix, current-price checkout, durable checkout replay/conflict handling, transaction rollback, concurrent stock reservation, signed webhooks, durable unknown/mismatch retention, webhook replay, initialization-timeout recovery, reconciliation-worker claiming, and reservation-expiry/payment-settlement races.
 
 ## Current Phase 1 gaps
 
-- Complete a real Paystack test-mode order through the deployed API once Pxxl deployment access returns.
-- Implement inventory admin endpoints, activity-log reads, notifications, analytics, and staff/role management.
-- Replace unsafe variant delete/recreate behavior and add per-variant stock entry.
-- Finish frontend API integration for checkout and remaining admin views.
-- Add an external monitoring/alert delivery destination if operational volume requires more than structured logs and the operations summary.
+- Complete one real Paystack test-mode order through the deployed API once Pxxl deployment access returns.
+- Add external alert delivery and settlement-export reconciliation if operational scale or provider access makes them necessary.

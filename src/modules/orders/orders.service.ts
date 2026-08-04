@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { OrderStatus, Prisma } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { fromMinorUnits, minorUnitsToDecimal, toMinorUnits } from "../../lib/money";
@@ -73,6 +74,16 @@ function generateOrderNumber(): string {
 
 export async function createOrder(userId: string, input: z.infer<typeof createOrderSchema>) {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+  const requestHash = crypto.createHash("sha256").update(JSON.stringify(input)).digest("hex");
+  const claimed = await prisma.checkoutAttempt.createMany({ data: [{ userId, key: input.idempotencyKey, requestHash }], skipDuplicates: true });
+  if (claimed.count === 0) {
+    const attempt = await prisma.checkoutAttempt.findUniqueOrThrow({ where: { userId_key: { userId, key: input.idempotencyKey } } });
+    if (attempt.requestHash !== requestHash) throw HttpError.conflict("Idempotency key was already used for a different checkout request");
+    if (!attempt.orderId) throw HttpError.conflict("This checkout request is already processing");
+    const initialized = await initializePaymentForOrder(attempt.orderId, Number((await prisma.order.findUniqueOrThrow({ where: { id: attempt.orderId }, select: { total: true } })).total), user.email);
+    const order = await prisma.order.findUniqueOrThrow({ where: { id: attempt.orderId }, include: orderInclude });
+    return { order: mapOrder(order), paymentError: initialized.payment.failureReason, redirectUrl: initialized.redirectUrl };
+  }
 
   const resolved = await resolveCartLines(input.items as CartLineInput[]);
   const bad = resolved.filter((l) => l.issue !== null);
@@ -93,7 +104,9 @@ export async function createOrder(userId: string, input: z.infer<typeof createOr
   const discount = minorUnitsToDecimal(discountMinor);
   const total = minorUnitsToDecimal(totalMinor);
 
-  const orderId = await prisma.$transaction(async (tx) => {
+  let orderId: string;
+  try {
+    orderId = await prisma.$transaction(async (tx) => {
     const address = await tx.address.create({
       data: {
         userId,
@@ -144,8 +157,13 @@ export async function createOrder(userId: string, input: z.infer<typeof createOr
       });
     }
 
-    return order.id;
-  });
+      await tx.checkoutAttempt.update({ where: { userId_key: { userId, key: input.idempotencyKey } }, data: { orderId: order.id } });
+      return order.id;
+    });
+  } catch (error) {
+    await prisma.checkoutAttempt.deleteMany({ where: { userId, key: input.idempotencyKey, orderId: null } });
+    throw error;
+  }
 
   let paymentError: string | null = null;
   let redirectUrl: string | null = null;

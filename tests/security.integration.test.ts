@@ -26,6 +26,8 @@ let createOrder: typeof import("../src/modules/orders/orders.service").createOrd
 let initializePaymentForOrder: typeof import("../src/modules/payments/payments.service").initializePaymentForOrder;
 let reconcilePaymentStatus: typeof import("../src/modules/payments/payments.service").reconcilePaymentStatus;
 let reconcilePendingPayments: typeof import("../src/modules/payments/payments.service").reconcilePendingPayments;
+let ingestWebhookEvent: typeof import("../src/modules/payments/payments.service").ingestWebhookEvent;
+let processWebhookEvent: typeof import("../src/modules/payments/payments.service").processWebhookEvent;
 let releaseExpiredReservations: typeof import("../src/modules/inventory/inventory.service").releaseExpiredReservations;
 let paystackProvider: typeof import("../src/modules/payments/providers/paystack/paystack.provider").paystackProvider;
 let toMinorUnits: typeof import("../src/lib/money").toMinorUnits;
@@ -58,7 +60,7 @@ test.before(async () => {
   ({ drainTestEmailOutbox } = await import("../src/lib/sendbyte"));
   ({ createOrder, updateOrderStatus, listOrdersForAdmin } = await import("../src/modules/orders/orders.service"));
   ({ listCustomers } = await import("../src/modules/customers/customers.service"));
-  ({ initializePaymentForOrder, reconcilePaymentStatus, reconcilePendingPayments } = await import("../src/modules/payments/payments.service"));
+  ({ initializePaymentForOrder, reconcilePaymentStatus, reconcilePendingPayments, ingestWebhookEvent, processWebhookEvent } = await import("../src/modules/payments/payments.service"));
   ({ releaseExpiredReservations, listLowStock, restockVariant } = await import("../src/modules/inventory/inventory.service"));
   ({ paystackProvider } = await import("../src/modules/payments/providers/paystack/paystack.provider"));
   ({ toMinorUnits, fromMinorUnits, minorUnitsToDecimal, moneyMatches } = await import("../src/lib/money"));
@@ -209,6 +211,25 @@ test("Paystack webhook signatures accept only the exact signed raw body", async 
   assert.throws(() => paystackProvider.parseWebhook(Buffer.from(`${payload} `), signature), /Invalid webhook signature/i);
 });
 
+test("signature-valid webhooks are retained before processing, including unknown references and mismatches", async () => {
+  const { order } = await makePendingOrder("webhook-retention", 75);
+  const providerRef = `retain-${crypto.randomUUID()}`;
+  const payment = await prisma.payment.create({ data: { orderId: order.id, provider: "paystack", providerRef, idempotencyKey: `retain-key-${crypto.randomUUID()}`, amount: 75, currency: "NGN", status: "PROCESSING" } });
+  const mismatch = await ingestWebhookEvent("paystack", { eventId: `mismatch-${crypto.randomUUID()}`, providerRef, status: "verified", amount: 74, currency: "NGN", rawPayload: { source: "test" } });
+  assert.equal(mismatch.paymentId, payment.id);
+  assert.equal(mismatch.processingStatus, "REJECTED");
+  assert.match(mismatch.processingError ?? "", /amount or currency mismatch/i);
+
+  const unknownEventId = `unknown-${crypto.randomUUID()}`;
+  const unknown = await ingestWebhookEvent("paystack", { eventId: unknownEventId, providerRef: `missing-${crypto.randomUUID()}`, status: "verified", amount: 75, currency: "NGN", rawPayload: { source: "test" } });
+  await ingestWebhookEvent("paystack", { eventId: unknownEventId, providerRef: "duplicate-payload-does-not-win", status: "failed", amount: 1, currency: "USD", rawPayload: { duplicate: true } });
+  assert.equal(unknown.paymentId, null);
+  assert.equal(unknown.processingStatus, "PENDING");
+  assert.equal(await prisma.paymentWebhookEvent.count({ where: { provider: "paystack", providerEventId: unknownEventId } }), 1);
+  assert.equal(await processWebhookEvent(unknown.id), false);
+  assert.equal((await prisma.paymentWebhookEvent.findUniqueOrThrow({ where: { id: unknown.id } })).processingStatus, "PENDING");
+});
+
 test("money helpers round once at the minor-unit boundary", () => {
   assert.equal(toMinorUnits("0.10"), 10);
   assert.equal(toMinorUnits("0.105"), 11);
@@ -321,6 +342,7 @@ test("two simultaneous checkouts cannot both reserve the final unit", async () =
     include: { variants: true },
   });
   const input = {
+    idempotencyKey: crypto.randomUUID(),
     items: [{ productId: product.id, color: "Black", size: "One Size", qty: 1 }],
     shipping: { first: "Test", last: "User", address: "1 Test Road", city: "Lagos", state: "Lagos", zip: "100001", phone: "08000000000" },
     deliveryMethod: "pickup" as const,
@@ -348,7 +370,9 @@ test("order creation revalidates current database prices and stores exact totals
   });
   await prisma.product.update({ where: { id: product.id }, data: { price: "21.37" } });
   const originalFetch = globalThis.fetch;
+  let initializationCalls = 0;
   globalThis.fetch = async (_input, init) => {
+    initializationCalls += 1;
     const body = JSON.parse(String(init?.body)) as { amount: number; reference: string; callback_url: string };
     assert.equal(body.amount, 7_311);
     assert.equal(new URL(body.callback_url).searchParams.get("payment_return"), "1");
@@ -356,11 +380,20 @@ test("order creation revalidates current database prices and stores exact totals
   };
 
   try {
-    const result = await createOrder(user.id, {
+    const idempotencyKey = crypto.randomUUID();
+    const checkoutInput = {
+      idempotencyKey,
       items: [{ productId: product.id, color: "Black", size: "One Size", qty: 3 }],
       shipping: { first: "Price", last: "Test", address: "1 Test Road", city: "Lagos", state: "Lagos", zip: "100001", phone: "08000000000" },
-      deliveryMethod: "standard",
-    });
+      deliveryMethod: "standard" as const,
+    };
+    const result = await createOrder(user.id, checkoutInput);
+    const replay = await createOrder(user.id, checkoutInput);
+    assert.equal(replay.order.id, result.order.id);
+    assert.equal(replay.redirectUrl, result.redirectUrl);
+    assert.equal(initializationCalls, 1);
+    await assert.rejects(() => createOrder(user.id, { ...checkoutInput, items: [{ ...checkoutInput.items[0], qty: 2 }] }), /different checkout request/i);
+    assert.equal(await prisma.order.count({ where: { userId: user.id } }), 1);
     assert.deepEqual({ subtotal: result.order.subtotal, deliveryFee: result.order.deliveryFee, discount: result.order.discount, total: result.order.total }, { subtotal: 64.11, deliveryFee: 9, discount: 0, total: 73.11 });
     assert.deepEqual(result.order.items.map((item) => ({ unitPrice: item.unitPrice, lineTotal: item.lineTotal, quantity: item.quantity })), [{ unitPrice: 21.37, lineTotal: 64.11, quantity: 3 }]);
     assert.equal(result.redirectUrl, "https://checkout.test/price");
@@ -396,6 +429,7 @@ test("order creation rolls back every write when a later reservation fails", asy
     prisma.stockReservation.count({ where: { variantId: product.variants[0].id } }),
   ]);
   const input = {
+    idempotencyKey: crypto.randomUUID(),
     items: [
       { productId: product.id, color: "White", size: "One Size", qty: 1 },
       { productId: product.id, color: "White", size: "One Size", qty: 1 },
@@ -688,15 +722,20 @@ test("payment amount or currency mismatch changes no payment, order, reservation
 test("failed payment initialization leaves one durable row that retries idempotently", async () => {
   const { user, order } = await makePendingOrder("initialize-retry", 125);
   const originalFetch = globalThis.fetch;
-  let calls = 0;
+  let initializationCalls = 0;
+  let verificationCalls = 0;
   globalThis.fetch = async (_input, init) => {
-    calls += 1;
+    if (!init?.body) {
+      verificationCalls += 1;
+      return new Response(JSON.stringify({ status: false, message: "transaction not found" }), { status: 404, headers: { "Content-Type": "application/json" } });
+    }
+    initializationCalls += 1;
     const request = JSON.parse(String(init?.body)) as { reference: string; amount: number; currency: string; email: string; callback_url: string; metadata: { orderId: string } };
     assert.deepEqual(
       { ...request, callback_url: new URL(request.callback_url).searchParams.get("payment_return") },
       { reference: `order_${order.id}`, amount: 12_500, currency: "NGN", email: user.email, callback_url: "1", metadata: { orderId: order.id } }
     );
-    if (calls === 1) return new Response(JSON.stringify({ status: false, message: "temporary provider failure" }), { status: 503, headers: { "Content-Type": "application/json" } });
+    if (initializationCalls === 1) return new Response(JSON.stringify({ status: false, message: "temporary provider failure" }), { status: 503, headers: { "Content-Type": "application/json" } });
     return new Response(JSON.stringify({ status: true, message: "Authorization URL created", data: { authorization_url: "https://checkout.test/retry", access_code: "access", reference: request.reference } }), { status: 200, headers: { "Content-Type": "application/json" } });
   };
 
@@ -717,8 +756,34 @@ test("failed payment initialization leaves one durable row that retries idempote
 
     const repeated = await initializePaymentForOrder(order.id, 125, user.email);
     assert.equal(repeated.payment.id, pending[0].id);
-    assert.equal(repeated.redirectUrl, null);
-    assert.equal(calls, 2);
+    assert.equal(repeated.redirectUrl, "https://checkout.test/retry");
+    assert.equal(initializationCalls, 2);
+    assert.equal(verificationCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an initialization timeout recovers by deterministic reference without charging again", async () => {
+  const { user, order } = await makePendingOrder("initialize-uncertain", 80);
+  const originalFetch = globalThis.fetch;
+  let initializationCalls = 0;
+  let verificationCalls = 0;
+  globalThis.fetch = async (_input, init) => {
+    if (init?.body) {
+      initializationCalls += 1;
+      throw new Error("network timeout after provider accepted request");
+    }
+    verificationCalls += 1;
+    return new Response(JSON.stringify({ status: true, message: "Verification successful", data: { reference: `order_${order.id}`, status: "abandoned", amount: 8_000, currency: "NGN" } }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    await assert.rejects(() => initializePaymentForOrder(order.id, 80, user.email), /network timeout/i);
+    const recovered = await initializePaymentForOrder(order.id, 80, user.email);
+    assert.equal(recovered.payment.providerRef, `order_${order.id}`);
+    assert.equal(recovered.payment.status, "PROCESSING");
+    assert.equal(initializationCalls, 1);
+    assert.equal(verificationCalls, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

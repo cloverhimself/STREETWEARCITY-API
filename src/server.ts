@@ -2,10 +2,11 @@ import { app } from "./app";
 import { env } from "./lib/env";
 import { logger } from "./lib/logger";
 import { releaseExpiredReservations } from "./modules/inventory/inventory.service";
-import { reconcilePendingPayments } from "./modules/payments/payments.service";
+import { processPendingWebhookEvents, reconcilePendingPayments } from "./modules/payments/payments.service";
 
 const RESERVATION_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const PAYMENT_RECONCILE_INTERVAL_MS = 60 * 1000;
+const WEBHOOK_PROCESS_INTERVAL_MS = 30 * 1000;
 
 app.listen(env.PORT, () => {
   logger.info(`streetwarecity-api listening on port ${env.PORT} (${env.NODE_ENV})`);
@@ -21,3 +22,7 @@ setInterval(() => {
 setInterval(() => {
   reconcilePendingPayments().catch((err) => logger.error({ err }, "Payment reconciliation sweep failed"));
 }, PAYMENT_RECONCILE_INTERVAL_MS);
+
+setInterval(() => {
+  processPendingWebhookEvents().catch((err) => logger.error({ err }, "Webhook processing sweep failed"));
+}, WEBHOOK_PROCESS_INTERVAL_MS);
