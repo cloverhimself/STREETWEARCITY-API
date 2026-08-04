@@ -21,6 +21,11 @@ const orderInclude = {
   },
 } satisfies Prisma.OrderInclude;
 
+const adminOrderInclude = {
+  ...orderInclude,
+  user: { select: { email: true, profile: { select: { firstName: true, lastName: true } } } },
+} satisfies Prisma.OrderInclude;
+
 function mapOrder(order: Prisma.OrderGetPayload<{ include: typeof orderInclude }>) {
   return {
     id: order.id,
@@ -161,6 +166,25 @@ export async function createOrder(userId: string, input: z.infer<typeof createOr
 export async function listOrdersForUser(userId: string) {
   const orders = await prisma.order.findMany({ where: { userId }, include: orderInclude, orderBy: { createdAt: "desc" } });
   return orders.map(mapOrder);
+}
+
+export async function listOrdersForAdmin(input: { page: number; pageSize: number; status?: OrderStatus }) {
+  const where: Prisma.OrderWhereInput = input.status ? { status: input.status } : {};
+  const [orders, total] = await prisma.$transaction([
+    prisma.order.findMany({ where, include: adminOrderInclude, orderBy: { createdAt: "desc" }, skip: (input.page - 1) * input.pageSize, take: input.pageSize }),
+    prisma.order.count({ where }),
+  ]);
+  return {
+    items: orders.map((order) => ({
+      ...mapOrder(order),
+      customer: {
+        email: order.user.email,
+        firstName: order.user.profile?.firstName ?? "",
+        lastName: order.user.profile?.lastName ?? "",
+      },
+    })),
+    pagination: { page: input.page, pageSize: input.pageSize, total, totalPages: Math.ceil(total / input.pageSize) },
+  };
 }
 
 export async function getOrder(orderId: string, requester: { id: string; permissions: string[] }) {

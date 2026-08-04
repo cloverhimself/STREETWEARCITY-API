@@ -50,11 +50,12 @@ let removeStaff: typeof import("../src/modules/admin/admin.service").removeStaff
 let resetPassword: typeof import("../src/modules/auth/auth.service").resetPassword;
 let requirePermission: typeof import("../src/middleware/rbac-guard").requirePermission;
 let updateProduct: typeof import("../src/modules/products/products.service").updateProduct;
+let listOrdersForAdmin: typeof import("../src/modules/orders/orders.service").listOrdersForAdmin;
 
 test.before(async () => {
   ({ login, refreshTokens, register, verifyEmail, requestPasswordReset, resetPassword } = await import("../src/modules/auth/auth.service"));
   ({ drainTestEmailOutbox } = await import("../src/lib/sendbyte"));
-  ({ createOrder, updateOrderStatus } = await import("../src/modules/orders/orders.service"));
+  ({ createOrder, updateOrderStatus, listOrdersForAdmin } = await import("../src/modules/orders/orders.service"));
   ({ initializePaymentForOrder, reconcilePaymentStatus, reconcilePendingPayments } = await import("../src/modules/payments/payments.service"));
   ({ releaseExpiredReservations, listLowStock, restockVariant } = await import("../src/modules/inventory/inventory.service"));
   ({ paystackProvider } = await import("../src/modules/payments/providers/paystack/paystack.provider"));
@@ -93,6 +94,23 @@ test("product variant edits preserve variant identity and inventory history", as
     () => updateProduct(product.id, { variants: [{ color: "Black", colorHex: "#111111", size: "One Size (Adjustable)", stock: 1 }] }, actor.id),
     /cannot be below 2 reserved units/i
   );
+});
+
+test("admin order listing paginates newest-first with customer context", async () => {
+  const user = await makeUser(`admin-orders-${crypto.randomUUID()}@test.local`);
+  const address = await prisma.address.create({ data: { userId: user.id, label: "Admin list", firstName: "Order", lastName: "Customer", phone: "08000000000", line1: "1 Test Road", city: "Lagos", state: "Lagos", zip: "100001" } });
+  const order = await prisma.order.create({ data: { orderNumber: `ADMIN-${crypto.randomUUID()}`, userId: user.id, status: "CANCELLED", subtotal: 90, deliveryFee: 0, total: 90, shippingAddressId: address.id } });
+
+  const result = await listOrdersForAdmin({ page: 1, pageSize: 100, status: "CANCELLED" });
+  const listed = result.items.find((item) => item.id === order.id);
+  assert.ok(listed);
+  assert.equal(listed.customer.email, user.email);
+  assert.equal(listed.customer.firstName, "Test");
+  assert.equal(listed.customer.lastName, "User");
+  assert.equal(result.pagination.page, 1);
+  assert.equal(result.pagination.pageSize, 100);
+  assert.ok(result.pagination.total >= 1);
+  assert.deepEqual([...result.items].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((item) => item.id), result.items.map((item) => item.id));
 });
 
 test("removing product variants retires referenced rows and deletes unused rows", async () => {

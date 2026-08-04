@@ -3,8 +3,8 @@ import { authGuard } from "../../middleware/auth-guard";
 import { requirePermission } from "../../middleware/rbac-guard";
 import { HttpError } from "../../utils/http-error";
 import { ok } from "../../utils/api-response";
-import { createOrder, getOrder, listOrdersForUser, updateOrderStatus } from "./orders.service";
-import { createOrderSchema, updateOrderStatusSchema } from "./orders.validators";
+import { createOrder, getOrder, listOrdersForAdmin, listOrdersForUser, updateOrderStatus } from "./orders.service";
+import { adminOrderListSchema, createOrderSchema, updateOrderStatusSchema } from "./orders.validators";
 
 export const ordersRouter = Router();
 
@@ -20,6 +20,10 @@ ordersRouter.post("/", async (req, res) => {
 ordersRouter.get("/", async (req, res) => {
   if (!req.user) throw HttpError.unauthorized();
   return ok(res, await listOrdersForUser(req.user.sub));
+});
+
+ordersRouter.get("/admin", requirePermission("orders.view"), async (req, res) => {
+  return ok(res, await listOrdersForAdmin(adminOrderListSchema.parse(req.query)));
 });
 
 ordersRouter.get("/:id", async (req, res) => {
