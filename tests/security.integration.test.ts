@@ -223,6 +223,87 @@ test("two simultaneous checkouts cannot both reserve the final unit", async () =
   assert.equal(inventory.totalQuantity, 1);
 });
 
+test("order creation revalidates current database prices and stores exact totals", async () => {
+  const user = await makeUser(`price-${crypto.randomUUID()}@test.local`);
+  const category = await prisma.category.findUniqueOrThrow({ where: { name: "Headwear" } });
+  const product = await prisma.product.create({
+    data: {
+      sku: `PRICE-${crypto.randomUUID()}`,
+      name: "Price Revalidation Product",
+      price: "19.99",
+      sizeType: "ADJUSTABLE",
+      categoryId: category.id,
+      variants: { create: [{ color: "Black", colorHex: "#000000", size: "One Size", sku: `PRICE-V-${crypto.randomUUID()}`, inventory: { create: { totalQuantity: 5 } } }] },
+    },
+  });
+  await prisma.product.update({ where: { id: product.id }, data: { price: "21.37" } });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as { amount: number; reference: string };
+    assert.equal(body.amount, 7_311);
+    return new Response(JSON.stringify({ status: true, message: "Authorization URL created", data: { authorization_url: "https://checkout.test/price", access_code: "access", reference: body.reference } }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  try {
+    const result = await createOrder(user.id, {
+      items: [{ productId: product.id, color: "Black", size: "One Size", qty: 3 }],
+      shipping: { first: "Price", last: "Test", address: "1 Test Road", city: "Lagos", state: "Lagos", zip: "100001", phone: "08000000000" },
+      deliveryMethod: "standard",
+    });
+    assert.deepEqual({ subtotal: result.order.subtotal, deliveryFee: result.order.deliveryFee, discount: result.order.discount, total: result.order.total }, { subtotal: 64.11, deliveryFee: 9, discount: 0, total: 73.11 });
+    assert.deepEqual(result.order.items.map((item) => ({ unitPrice: item.unitPrice, lineTotal: item.lineTotal, quantity: item.quantity })), [{ unitPrice: 21.37, lineTotal: 64.11, quantity: 3 }]);
+    assert.equal(result.redirectUrl, "https://checkout.test/price");
+
+    const stored = await prisma.order.findUniqueOrThrow({ where: { id: result.order.id }, include: { items: true, reservations: true, payment: true } });
+    assert.deepEqual({ subtotal: stored.subtotal.toString(), deliveryFee: stored.deliveryFee.toString(), total: stored.total.toString(), unitPrice: stored.items[0].unitPrice.toString() }, { subtotal: "64.11", deliveryFee: "9", total: "73.11", unitPrice: "21.37" });
+    assert.equal(stored.reservations.length, 1);
+    assert.equal(stored.reservations[0].quantity, 3);
+    assert.equal(stored.reservations[0].status, "ACTIVE");
+    assert.equal(stored.payment?.amount.toString(), "73.11");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("order creation rolls back every write when a later reservation fails", async () => {
+  const user = await makeUser(`rollback-${crypto.randomUUID()}@test.local`);
+  const category = await prisma.category.findUniqueOrThrow({ where: { name: "Headwear" } });
+  const product = await prisma.product.create({
+    data: {
+      sku: `ROLLBACK-${crypto.randomUUID()}`,
+      name: "Rollback Test Product",
+      price: "30.00",
+      sizeType: "ADJUSTABLE",
+      categoryId: category.id,
+      variants: { create: [{ color: "White", colorHex: "#ffffff", size: "One Size", sku: `ROLLBACK-V-${crypto.randomUUID()}`, inventory: { create: { totalQuantity: 1 } } }] },
+    },
+    include: { variants: true },
+  });
+  const before = await Promise.all([
+    prisma.address.count({ where: { userId: user.id } }),
+    prisma.order.count({ where: { userId: user.id } }),
+    prisma.stockReservation.count({ where: { variantId: product.variants[0].id } }),
+  ]);
+  const input = {
+    items: [
+      { productId: product.id, color: "White", size: "One Size", qty: 1 },
+      { productId: product.id, color: "White", size: "One Size", qty: 1 },
+    ],
+    shipping: { first: "Rollback", last: "Test", address: "1 Test Road", city: "Lagos", state: "Lagos", zip: "100001", phone: "08000000000" },
+    deliveryMethod: "pickup" as const,
+  };
+
+  await assert.rejects(() => createOrder(user.id, input), /Insufficient stock/i);
+  const after = await Promise.all([
+    prisma.address.count({ where: { userId: user.id } }),
+    prisma.order.count({ where: { userId: user.id } }),
+    prisma.stockReservation.count({ where: { variantId: product.variants[0].id } }),
+  ]);
+  assert.deepEqual(after, before);
+  const inventory = await prisma.inventory.findUniqueOrThrow({ where: { variantId: product.variants[0].id } });
+  assert.deepEqual({ total: inventory.totalQuantity, reserved: inventory.reservedQuantity }, { total: 1, reserved: 0 });
+});
+
 test("replayed verified webhook fulfills inventory exactly once", async () => {
   const user = await makeUser(`payment-${crypto.randomUUID()}@test.local`);
   const category = await prisma.category.findUniqueOrThrow({ where: { name: "Headwear" } });
