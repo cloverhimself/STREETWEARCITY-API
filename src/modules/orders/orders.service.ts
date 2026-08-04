@@ -2,6 +2,7 @@ import type { OrderStatus, Prisma } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { fromMinorUnits, minorUnitsToDecimal, toMinorUnits } from "../../lib/money";
 import { HttpError } from "../../utils/http-error";
+import { sendOrderStatusEmail } from "../../lib/sendbyte";
 import { resolveCartLines, type CartLineInput } from "../cart/cart.service";
 import { initializePaymentForOrder } from "../payments/payments.service";
 import type { createOrderSchema } from "./orders.validators";
@@ -188,8 +189,15 @@ export async function updateOrderStatus(orderId: string, status: OrderStatus, ac
       }
     }
     const updated = await tx.order.update({ where: { id: orderId }, data: { status }, include: orderInclude });
+    if (status === "SHIPPED" || status === "DELIVERED") {
+      await tx.notification.create({ data: { userId: existing.userId, title: status === "SHIPPED" ? "Order shipped" : "Order delivered", body: `Order ${existing.orderNumber} has been ${status.toLowerCase()}.` } });
+    }
     await tx.activityLog.create({ data: { actorUserId, action: "order.status_updated", resourceType: "order", resourceId: orderId, oldValue: { status: existing.status }, newValue: { status } } });
     return updated;
   });
+  if (status === "SHIPPED" || status === "DELIVERED") {
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: existing.userId }, select: { email: true } });
+    await sendOrderStatusEmail(user.email, { orderNumber: existing.orderNumber, status });
+  }
   return mapOrder(order);
 }

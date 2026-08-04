@@ -1,6 +1,7 @@
 import { prisma } from "../../lib/prisma";
 import { logger } from "../../lib/logger";
 import { moneyMatches } from "../../lib/money";
+import { sendOrderStatusEmail } from "../../lib/sendbyte";
 import { HttpError } from "../../utils/http-error";
 import { getActivePaymentProvider } from "./provider.registry";
 import type { WebhookEvent } from "./provider.interface";
@@ -54,7 +55,7 @@ export async function reconcilePaymentStatus(provider: string, event: WebhookEve
     throw HttpError.badRequest("Payment amount or currency mismatch");
   }
   if (event.status === "verified") {
-    return prisma.$transaction(async (tx) => {
+    const settled = await prisma.$transaction(async (tx) => {
       const recorded = await tx.paymentWebhookEvent.createMany({ data: [{ provider, providerEventId: event.eventId, paymentId: payment.id, payload: event.rawPayload as Prisma.InputJsonValue }], skipDuplicates: true });
       if (recorded.count === 0) return tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
       const updated = await tx.payment.updateMany({ where: { id: payment.id, status: { notIn: ["COMPLETED", "FAILED", "REFUNDED"] } }, data: { status: "COMPLETED" } });
@@ -75,9 +76,12 @@ export async function reconcilePaymentStatus(provider: string, event: WebhookEve
           data: { inventoryId: inventory.id, delta: -reservation.quantity, reason: "sale", actorUserId: null },
         });
       }
-      await tx.order.update({ where: { id: payment.orderId }, data: { status: "CONFIRMED" } });
-      return tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
+      const order = await tx.order.update({ where: { id: payment.orderId }, data: { status: "CONFIRMED" }, include: { user: { select: { email: true } } } });
+      await tx.notification.create({ data: { userId: order.userId, title: "Order confirmed", body: `Payment confirmed for order ${order.orderNumber}.` } });
+      return { payment: await tx.payment.findUniqueOrThrow({ where: { id: payment.id } }), email: order.user.email, orderNumber: order.orderNumber };
     });
+    if ("email" in settled) await sendOrderStatusEmail(settled.email, { orderNumber: settled.orderNumber, status: "CONFIRMED" });
+    return "payment" in settled ? settled.payment : settled;
   }
 
   if (event.status === "failed") {

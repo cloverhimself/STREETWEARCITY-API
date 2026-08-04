@@ -47,3 +47,12 @@ export function sendPasswordResetEmail(to: string, token: string) {
     `<p>Use the link below to reset your Streetwear City password:</p><p><a href="${link}">${link}</a></p><p>This link expires in 30 minutes. If you didn't request this, ignore this email.</p>`
   );
 }
+
+export function sendOrderStatusEmail(to: string, input: { orderNumber: string; status: "CONFIRMED" | "SHIPPED" | "DELIVERED" }) {
+  const copy = {
+    CONFIRMED: { subject: `Order ${input.orderNumber} confirmed`, heading: "Payment confirmed", body: "Your payment was confirmed and your order is now being prepared." },
+    SHIPPED: { subject: `Order ${input.orderNumber} shipped`, heading: "Your order is on the way", body: "Your Streetwear City order has shipped." },
+    DELIVERED: { subject: `Order ${input.orderNumber} delivered`, heading: "Order delivered", body: "Your Streetwear City order has been marked as delivered. We hope you love it." },
+  }[input.status];
+  return send(to, copy.subject, `<h2>${copy.heading}</h2><p>${copy.body}</p><p>Order: <strong>${input.orderNumber}</strong></p>`);
+}

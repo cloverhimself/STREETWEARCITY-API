@@ -36,17 +36,22 @@ let moneyMatches: typeof import("../src/lib/money").moneyMatches;
 let listLowStock: typeof import("../src/modules/inventory/inventory.service").listLowStock;
 let restockVariant: typeof import("../src/modules/inventory/inventory.service").restockVariant;
 let listActivityLogs: typeof import("../src/modules/activity-logs/activity-logs.service").listActivityLogs;
+let listNotifications: typeof import("../src/modules/notifications/notifications.service").listNotifications;
+let markNotificationRead: typeof import("../src/modules/notifications/notifications.service").markNotificationRead;
+let markAllNotificationsRead: typeof import("../src/modules/notifications/notifications.service").markAllNotificationsRead;
+let updateOrderStatus: typeof import("../src/modules/orders/orders.service").updateOrderStatus;
 let requirePermission: typeof import("../src/middleware/rbac-guard").requirePermission;
 
 test.before(async () => {
   ({ login, refreshTokens, register, verifyEmail, requestPasswordReset, resetPassword } = await import("../src/modules/auth/auth.service"));
   ({ drainTestEmailOutbox } = await import("../src/lib/sendbyte"));
-  ({ createOrder } = await import("../src/modules/orders/orders.service"));
+  ({ createOrder, updateOrderStatus } = await import("../src/modules/orders/orders.service"));
   ({ initializePaymentForOrder, reconcilePaymentStatus, reconcilePendingPayments } = await import("../src/modules/payments/payments.service"));
   ({ releaseExpiredReservations, listLowStock, restockVariant } = await import("../src/modules/inventory/inventory.service"));
   ({ paystackProvider } = await import("../src/modules/payments/providers/paystack/paystack.provider"));
   ({ toMinorUnits, fromMinorUnits, minorUnitsToDecimal, moneyMatches } = await import("../src/lib/money"));
   ({ listActivityLogs } = await import("../src/modules/activity-logs/activity-logs.service"));
+  ({ listNotifications, markNotificationRead, markAllNotificationsRead } = await import("../src/modules/notifications/notifications.service"));
   ({ requirePermission } = await import("../src/middleware/rbac-guard"));
 });
 
@@ -383,6 +388,52 @@ test("activity-log reads require logs.view permission", async () => {
   const adminRequest = { user: { sub: crypto.randomUUID(), roles: ["super_admin"], permissions: ["logs.view"] } };
   middleware(adminRequest as never, {} as never, () => { allowed = true; });
   assert.equal(allowed, true);
+});
+
+test("order status notifications are idempotent, delivered by email, and user-scoped", async () => {
+  drainTestEmailOutbox();
+  const customer = await makeUser(`notify-customer-${crypto.randomUUID()}@test.local`);
+  const other = await makeUser(`notify-other-${crypto.randomUUID()}@test.local`);
+  const actor = await makeUser(`notify-actor-${crypto.randomUUID()}@test.local`);
+  const category = await prisma.category.findUniqueOrThrow({ where: { name: "Headwear" } });
+  const product = await prisma.product.create({
+    data: { sku: `NOTIFY-${crypto.randomUUID()}`, name: "Notification Product", price: 40, sizeType: "ADJUSTABLE", categoryId: category.id,
+      variants: { create: [{ color: "Black", colorHex: "#000", size: "One Size", sku: `NOTIFY-V-${crypto.randomUUID()}`, inventory: { create: { totalQuantity: 1, reservedQuantity: 1 } } }] } },
+    include: { variants: true },
+  });
+  const address = await prisma.address.create({ data: { userId: customer.id, label: "Test", firstName: "Test", lastName: "User", phone: "08000000000", line1: "1 Test Road", city: "Lagos", state: "Lagos", zip: "100001" } });
+  const order = await prisma.order.create({ data: { orderNumber: `NOTIFY-${crypto.randomUUID()}`, userId: customer.id, subtotal: 40, deliveryFee: 0, total: 40, shippingAddressId: address.id,
+    items: { create: [{ productId: product.id, variantId: product.variants[0].id, quantity: 1, unitPrice: 40 }] } } });
+  await prisma.stockReservation.create({ data: { variantId: product.variants[0].id, orderId: order.id, quantity: 1, status: "ACTIVE", expiresAt: new Date(Date.now() + 60_000) } });
+  const payment = await prisma.payment.create({ data: { orderId: order.id, provider: "paystack", providerRef: `notify-ref-${crypto.randomUUID()}`, idempotencyKey: `notify-key-${crypto.randomUUID()}`, amount: 40, currency: "NGN", status: "PROCESSING" } });
+  const event = { eventId: `notify-event-${crypto.randomUUID()}`, providerRef: payment.providerRef!, status: "verified" as const, amount: 40, currency: "NGN", rawPayload: { notify: true } };
+
+  await reconcilePaymentStatus("paystack", event);
+  await reconcilePaymentStatus("paystack", event);
+  let messages = drainTestEmailOutbox();
+  assert.equal(messages.length, 1);
+  assert.match(messages[0].subject, /confirmed/i);
+  assert.equal(await prisma.notification.count({ where: { userId: customer.id, title: "Order confirmed" } }), 1);
+
+  await updateOrderStatus(order.id, "PROCESSING", actor.id);
+  await updateOrderStatus(order.id, "SHIPPED", actor.id);
+  await updateOrderStatus(order.id, "DELIVERED", actor.id);
+  messages = drainTestEmailOutbox();
+  assert.equal(messages.length, 2);
+  assert.match(messages[0].subject, /shipped/i);
+  assert.match(messages[1].subject, /delivered/i);
+
+  const unread = await listNotifications(customer.id, { page: 1, pageSize: 10, unreadOnly: true });
+  assert.equal(unread.unreadCount, 3);
+  assert.equal(unread.items.length, 3);
+  await assert.rejects(() => markNotificationRead(other.id, unread.items[0].id), /Notification not found/);
+  const read = await markNotificationRead(customer.id, unread.items[0].id);
+  assert.ok(read.readAt);
+  const marked = await markAllNotificationsRead(customer.id);
+  assert.equal(marked.updated, 2);
+  const final = await listNotifications(customer.id, { page: 1, pageSize: 10, unreadOnly: true });
+  assert.equal(final.unreadCount, 0);
+  assert.equal(final.items.length, 0);
 });
 
 test("replayed verified webhook fulfills inventory exactly once", async () => {
