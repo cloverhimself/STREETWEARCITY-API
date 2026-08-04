@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 import bcrypt from "bcryptjs";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -27,6 +28,7 @@ let initializePaymentForOrder: typeof import("../src/modules/payments/payments.s
 let reconcilePaymentStatus: typeof import("../src/modules/payments/payments.service").reconcilePaymentStatus;
 let reconcilePendingPayments: typeof import("../src/modules/payments/payments.service").reconcilePendingPayments;
 let releaseExpiredReservations: typeof import("../src/modules/inventory/inventory.service").releaseExpiredReservations;
+let paystackProvider: typeof import("../src/modules/payments/providers/paystack/paystack.provider").paystackProvider;
 let requirePermission: typeof import("../src/middleware/rbac-guard").requirePermission;
 
 test.before(async () => {
@@ -35,6 +37,7 @@ test.before(async () => {
   ({ createOrder } = await import("../src/modules/orders/orders.service"));
   ({ initializePaymentForOrder, reconcilePaymentStatus, reconcilePendingPayments } = await import("../src/modules/payments/payments.service"));
   ({ releaseExpiredReservations } = await import("../src/modules/inventory/inventory.service"));
+  ({ paystackProvider } = await import("../src/modules/payments/providers/paystack/paystack.provider"));
   ({ requirePermission } = await import("../src/middleware/rbac-guard"));
 });
 
@@ -79,6 +82,16 @@ test("registration sends an alphanumeric code that verifies exactly once", async
   assert.ok(verified.emailVerifiedAt);
   await login(email, "TestPassword123!");
   await assert.rejects(() => verifyEmail(email, code!), /invalid, expired, or already used/i);
+});
+
+test("Paystack webhook signatures accept only the exact signed raw body", async () => {
+  const payload = JSON.stringify({ event: "charge.success", data: { id: 123, reference: "ref-signature", status: "success", amount: 7_500, currency: "NGN" } });
+  const signature = crypto.createHmac("sha512", "test_key").update(Buffer.from(payload)).digest("hex");
+  const event = paystackProvider.parseWebhook(Buffer.from(payload), signature);
+  assert.deepEqual({ providerRef: event.providerRef, status: event.status, amount: event.amount, currency: event.currency }, { providerRef: "ref-signature", status: "verified", amount: 75, currency: "NGN" });
+  assert.throws(() => paystackProvider.parseWebhook(Buffer.from(payload), `${signature.slice(0, -1)}0`), /Invalid webhook signature/i);
+  assert.throws(() => paystackProvider.parseWebhook(Buffer.from(payload), undefined), /Missing webhook signature/i);
+  assert.throws(() => paystackProvider.parseWebhook(Buffer.from(`${payload} `), signature), /Invalid webhook signature/i);
 });
 
 test("expired verification codes are rejected without activating the account", async () => {

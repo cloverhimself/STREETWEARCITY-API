@@ -1,8 +1,9 @@
 import express, { Router } from "express";
 import { authGuard } from "../../middleware/auth-guard";
+import { requirePermission } from "../../middleware/rbac-guard";
 import { ok } from "../../utils/api-response";
 import { getActivePaymentProvider } from "./provider.registry";
-import { getPaymentStatusForOrder, reconcilePaymentStatus } from "./payments.service";
+import { getPaymentOperationsSummary, getPaymentStatusForOrder, reconcilePaymentStatus } from "./payments.service";
 
 export const paymentsRouter = Router();
 
@@ -22,4 +23,8 @@ paymentsRouter.post("/webhook", express.raw({ type: "application/json" }), async
 paymentsRouter.get("/orders/:orderId/status", authGuard, async (req, res) => {
   const payment = await getPaymentStatusForOrder(req.params.orderId as string, req.user!);
   return ok(res, { status: payment.status, provider: payment.provider });
+});
+
+paymentsRouter.get("/operations/summary", authGuard, requirePermission("payments.view"), async (_req, res) => {
+  return ok(res, await getPaymentOperationsSummary());
 });

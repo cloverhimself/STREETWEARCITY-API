@@ -150,3 +150,21 @@ export async function getPaymentStatusForOrder(orderId: string, requester: { sub
   if (!payment) throw HttpError.notFound("No payment found for this order");
   return payment;
 }
+
+export async function getPaymentOperationsSummary() {
+  const now = new Date();
+  const [nonTerminal, failed24h, webhook24h, mismatch24h] = await Promise.all([
+    prisma.payment.findMany({ where: { status: { in: ["PENDING", "PROCESSING"] } }, select: { status: true, reconcileAttempts: true, nextReconcileAt: true, createdAt: true } }),
+    prisma.payment.count({ where: { status: "FAILED", updatedAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } } }),
+    prisma.paymentWebhookEvent.count({ where: { createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } } }),
+    prisma.paymentWebhookEvent.count({ where: { createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }, payload: { path: ["mismatch"], equals: true } } }),
+  ]);
+  const overdue = nonTerminal.filter((payment) => payment.nextReconcileAt !== null && payment.nextReconcileAt <= now).length;
+  const highRetry = nonTerminal.filter((payment) => payment.reconcileAttempts >= 5).length;
+  return {
+    generatedAt: now.toISOString(),
+    payments: { pending: nonTerminal.filter((payment) => payment.status === "PENDING").length, processing: nonTerminal.filter((payment) => payment.status === "PROCESSING").length, overdue, highRetry, failedLast24h: failed24h },
+    webhooks: { receivedLast24h: webhook24h, mismatchesLast24h: mismatch24h },
+    alerts: { overduePayments: overdue > 0, repeatedReconciliationFailures: highRetry > 0, failedPaymentsLast24h: failed24h > 0, webhookMismatchesLast24h: mismatch24h > 0 },
+  };
+}
