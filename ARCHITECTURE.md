@@ -53,6 +53,7 @@ Implemented:
 - `cart`: live product/variant/price/stock validation.
 - `orders`: server-priced checkout, atomic stock reservations, order history, ownership checks, and guarded lifecycle transitions.
 - `payments`: Paystack initialization, signed webhook parsing, idempotent settlement, provider polling/reconciliation, payment-status reads, and operations summary.
+- `analytics`: permission-gated live PostgreSQL revenue, order-trend, top-customer, and best-seller aggregations.
 - `uploads`: permission-gated Cloudinary product-image upload.
 - `inventory`: low-stock pagination, audited restocking, and expired reservation release.
 

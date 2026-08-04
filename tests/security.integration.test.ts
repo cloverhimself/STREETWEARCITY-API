@@ -40,6 +40,10 @@ let listNotifications: typeof import("../src/modules/notifications/notifications
 let markNotificationRead: typeof import("../src/modules/notifications/notifications.service").markNotificationRead;
 let markAllNotificationsRead: typeof import("../src/modules/notifications/notifications.service").markAllNotificationsRead;
 let updateOrderStatus: typeof import("../src/modules/orders/orders.service").updateOrderStatus;
+let revenueAnalytics: typeof import("../src/modules/analytics/analytics.service").revenueAnalytics;
+let orderTrends: typeof import("../src/modules/analytics/analytics.service").orderTrends;
+let topCustomers: typeof import("../src/modules/analytics/analytics.service").topCustomers;
+let bestSellers: typeof import("../src/modules/analytics/analytics.service").bestSellers;
 let requirePermission: typeof import("../src/middleware/rbac-guard").requirePermission;
 
 test.before(async () => {
@@ -52,6 +56,7 @@ test.before(async () => {
   ({ toMinorUnits, fromMinorUnits, minorUnitsToDecimal, moneyMatches } = await import("../src/lib/money"));
   ({ listActivityLogs } = await import("../src/modules/activity-logs/activity-logs.service"));
   ({ listNotifications, markNotificationRead, markAllNotificationsRead } = await import("../src/modules/notifications/notifications.service"));
+  ({ revenueAnalytics, orderTrends, topCustomers, bestSellers } = await import("../src/modules/analytics/analytics.service"));
   ({ requirePermission } = await import("../src/middleware/rbac-guard"));
 });
 
@@ -434,6 +439,49 @@ test("order status notifications are idempotent, delivered by email, and user-sc
   const final = await listNotifications(customer.id, { page: 1, pageSize: 10, unreadOnly: true });
   assert.equal(final.unreadCount, 0);
   assert.equal(final.items.length, 0);
+});
+
+test("analytics aggregate only completed payments and rank customers and products", async () => {
+  const [customerA, customerB] = await Promise.all([makeUser(`analytics-a-${crypto.randomUUID()}@test.local`), makeUser(`analytics-b-${crypto.randomUUID()}@test.local`)]);
+  const category = await prisma.category.findUniqueOrThrow({ where: { name: "Headwear" } });
+  const suffix = crypto.randomUUID();
+  const products = await Promise.all([
+    prisma.product.create({ data: { sku: `AN-A-${suffix}`, name: "Analytics Bestseller", price: 25, sizeType: "ADJUSTABLE", categoryId: category.id, variants: { create: [{ color: "Black", colorHex: "#000", size: "One Size", sku: `AN-A-V-${suffix}`, inventory: { create: { totalQuantity: 20 } } }] } }, include: { variants: true } }),
+    prisma.product.create({ data: { sku: `AN-B-${suffix}`, name: "Analytics Runner Up", price: 40, sizeType: "ADJUSTABLE", categoryId: category.id, variants: { create: [{ color: "Blue", colorHex: "#00f", size: "One Size", sku: `AN-B-V-${suffix}`, inventory: { create: { totalQuantity: 20 } } }] } }, include: { variants: true } }),
+  ]);
+  const createAnalyticsOrder = async (userId: string, number: string, status: "COMPLETED" | "PROCESSING", items: Array<{ product: typeof products[number]; qty: number; price: number }>, total: number, createdAt: Date) => {
+    const address = await prisma.address.create({ data: { userId, label: "Analytics", firstName: "Test", lastName: "User", phone: "08000000000", line1: "1 Test Road", city: "Lagos", state: "Lagos", zip: "100001" } });
+    const order = await prisma.order.create({ data: { orderNumber: number, userId, status: status === "COMPLETED" ? "CONFIRMED" : "PENDING", subtotal: total, deliveryFee: 0, total, shippingAddressId: address.id, createdAt,
+      items: { create: items.map((item) => ({ productId: item.product.id, variantId: item.product.variants[0].id, quantity: item.qty, unitPrice: item.price })) } } });
+    await prisma.payment.create({ data: { orderId: order.id, provider: "paystack", providerRef: `an-${crypto.randomUUID()}`, idempotencyKey: `an-key-${crypto.randomUUID()}`, status, amount: total, currency: "NGN" } });
+    return order;
+  };
+  const now = new Date();
+  const start = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  await createAnalyticsOrder(customerA.id, `ANA-${crypto.randomUUID()}`, "COMPLETED", [{ product: products[0], qty: 3, price: 25 }], 75, now);
+  await createAnalyticsOrder(customerB.id, `ANB-${crypto.randomUUID()}`, "COMPLETED", [{ product: products[1], qty: 1, price: 40 }], 40, now);
+  await createAnalyticsOrder(customerB.id, `ANC-${crypto.randomUUID()}`, "PROCESSING", [{ product: products[1], qty: 10, price: 40 }], 400, now);
+
+  const markerNames = new Set(products.map((product) => product.name));
+  const revenue = await revenueAnalytics({ from: start, to: new Date(now.getTime() + 1_000), interval: "day" });
+  assert.ok(revenue.some((row) => row.revenue >= 115 && row.orders >= 2));
+  const trends = await orderTrends({ from: start, to: new Date(now.getTime() + 1_000), interval: "day" });
+  assert.ok(trends.some((row) => row.status === "CONFIRMED" && row.count >= 2));
+  assert.ok(trends.some((row) => row.status === "PENDING" && row.count >= 1));
+  const customers = await topCustomers({ from: start, to: new Date(now.getTime() + 1_000), limit: 100 });
+  const ownCustomers = customers.filter((row) => row.userId === customerA.id || row.userId === customerB.id);
+  assert.deepEqual(ownCustomers.map((row) => ({ userId: row.userId, spent: row.spent })), [{ userId: customerA.id, spent: 75 }, { userId: customerB.id, spent: 40 }]);
+  const sellers = await bestSellers({ from: start, to: new Date(now.getTime() + 1_000), limit: 100 });
+  const ownSellers = sellers.filter((row) => markerNames.has(row.name));
+  assert.deepEqual(ownSellers.map((row) => ({ name: row.name, unitsSold: row.unitsSold, revenue: row.revenue })), [{ name: "Analytics Bestseller", unitsSold: 3, revenue: 75 }, { name: "Analytics Runner Up", unitsSold: 1, revenue: 40 }]);
+});
+
+test("analytics reads require analytics.view permission", () => {
+  const middleware = requirePermission("analytics.view");
+  assert.throws(() => middleware({ user: { sub: crypto.randomUUID(), roles: ["customer"], permissions: [] } } as never, {} as never, () => undefined), /Missing permission: analytics\.view/);
+  let allowed = false;
+  middleware({ user: { sub: crypto.randomUUID(), roles: ["finance_manager"], permissions: ["analytics.view"] } } as never, {} as never, () => { allowed = true; });
+  assert.equal(allowed, true);
 });
 
 test("replayed verified webhook fulfills inventory exactly once", async () => {

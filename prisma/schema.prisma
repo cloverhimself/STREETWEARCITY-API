@@ -266,6 +266,8 @@ model Order {
   payment      Payment?
   reservations StockReservation[]
 
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
   @@map("orders")
 }
 
@@ -280,6 +282,7 @@ model OrderItem {
   quantity  Int
   unitPrice Decimal        @db.Decimal(12, 2)
 
+  @@index([productId])
   @@map("order_items")
 }
 
