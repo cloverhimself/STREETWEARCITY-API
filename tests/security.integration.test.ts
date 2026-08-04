@@ -51,11 +51,13 @@ let resetPassword: typeof import("../src/modules/auth/auth.service").resetPasswo
 let requirePermission: typeof import("../src/middleware/rbac-guard").requirePermission;
 let updateProduct: typeof import("../src/modules/products/products.service").updateProduct;
 let listOrdersForAdmin: typeof import("../src/modules/orders/orders.service").listOrdersForAdmin;
+let listCustomers: typeof import("../src/modules/customers/customers.service").listCustomers;
 
 test.before(async () => {
   ({ login, refreshTokens, register, verifyEmail, requestPasswordReset, resetPassword } = await import("../src/modules/auth/auth.service"));
   ({ drainTestEmailOutbox } = await import("../src/lib/sendbyte"));
   ({ createOrder, updateOrderStatus, listOrdersForAdmin } = await import("../src/modules/orders/orders.service"));
+  ({ listCustomers } = await import("../src/modules/customers/customers.service"));
   ({ initializePaymentForOrder, reconcilePaymentStatus, reconcilePendingPayments } = await import("../src/modules/payments/payments.service"));
   ({ releaseExpiredReservations, listLowStock, restockVariant } = await import("../src/modules/inventory/inventory.service"));
   ({ paystackProvider } = await import("../src/modules/payments/providers/paystack/paystack.provider"));
@@ -111,6 +113,20 @@ test("admin order listing paginates newest-first with customer context", async (
   assert.equal(result.pagination.pageSize, 100);
   assert.ok(result.pagination.total >= 1);
   assert.deepEqual([...result.items].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((item) => item.id), result.items.map((item) => item.id));
+});
+
+test("customer listing returns real profiles, order counts, and completed spend", async () => {
+  const user = await makeUser(`customers-${crypto.randomUUID()}@test.local`);
+  const address = await prisma.address.create({ data: { userId: user.id, label: "Customer list", firstName: "Test", lastName: "User", phone: "08000000000", line1: "1 Test Road", city: "Lagos", state: "Lagos", zip: "100001" } });
+  await prisma.order.create({ data: { orderNumber: `CUSTOMER-${crypto.randomUUID()}`, userId: user.id, status: "CONFIRMED", subtotal: 120, deliveryFee: 0, total: 120, shippingAddressId: address.id } });
+  const result = await listCustomers({ page: 1, pageSize: 100 });
+  const listed = result.items.find((item) => item.id === user.id);
+  assert.ok(listed);
+  assert.equal(listed.name, "Test User");
+  assert.equal(listed.email, user.email);
+  assert.equal(listed.orders, 1);
+  assert.equal(listed.spent, 0);
+  assert.ok(result.pagination.total >= 1);
 });
 
 test("removing product variants retires referenced rows and deletes unused rows", async () => {
