@@ -7,6 +7,28 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: streetwarecity_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/streetwarecity_test
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/streetwarecity_test
+      NODE_ENV: test
+      JWT_ACCESS_SECRET: abcdefghijklmnopqrstuvwxyz123456
+      JWT_REFRESH_SECRET: zyxwvutsrqponmlkjihgfedcba654321
+      PAYMENT_PROVIDER: paystack
+      PAYSTACK_SECRET_KEY: test_key
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -15,7 +37,10 @@ jobs:
           cache: npm
       - run: npm ci --include=dev
       - run: npx prisma validate
+      - run: npx prisma migrate deploy
+      - run: npm run seed
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      - run: npm run test:integration
       - run: npm run build

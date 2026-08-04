@@ -52,33 +52,37 @@ export async function reconcilePaymentStatus(provider: string, event: WebhookEve
     logger.error({ paymentId: payment.id, expectedAmount: Number(payment.amount), receivedAmount: event.amount, expectedCurrency: payment.currency, receivedCurrency: event.currency }, "Payment webhook amount/currency mismatch");
     throw HttpError.badRequest("Payment amount or currency mismatch");
   }
-  const recorded = await prisma.paymentWebhookEvent.createMany({ data: [{ provider, providerEventId: event.eventId, paymentId: payment.id, payload: event.rawPayload as Prisma.InputJsonValue }], skipDuplicates: true });
-  if (recorded.count === 0) return payment;
-
   if (event.status === "verified") {
     return prisma.$transaction(async (tx) => {
+      const recorded = await tx.paymentWebhookEvent.createMany({ data: [{ provider, providerEventId: event.eventId, paymentId: payment.id, payload: event.rawPayload as Prisma.InputJsonValue }], skipDuplicates: true });
+      if (recorded.count === 0) return tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
       const updated = await tx.payment.updateMany({ where: { id: payment.id, status: { notIn: ["COMPLETED", "FAILED", "REFUNDED"] } }, data: { status: "COMPLETED" } });
       if (updated.count !== 1) return tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
-      await tx.order.update({ where: { id: payment.orderId }, data: { status: "CONFIRMED" } });
 
-      const reservations = await tx.stockReservation.findMany({ where: { orderId: payment.orderId, status: "ACTIVE" } });
+      const reservations = await tx.stockReservation.findMany({ where: { orderId: payment.orderId } });
+      const claimed = await tx.stockReservation.updateMany({ where: { orderId: payment.orderId, status: "ACTIVE" }, data: { status: "CONSUMED" } });
+      if (reservations.length === 0 || claimed.count !== reservations.length) {
+        throw HttpError.conflict("Payment succeeded after its stock reservation was released or expired");
+      }
       for (const reservation of reservations) {
         await tx.inventory.update({
           where: { variantId: reservation.variantId },
           data: { totalQuantity: { decrement: reservation.quantity }, reservedQuantity: { decrement: reservation.quantity } },
         });
-        await tx.stockReservation.update({ where: { id: reservation.id }, data: { status: "CONSUMED" } });
         const inventory = await tx.inventory.findUniqueOrThrow({ where: { variantId: reservation.variantId } });
         await tx.inventoryLog.create({
           data: { inventoryId: inventory.id, delta: -reservation.quantity, reason: "sale", actorUserId: null },
         });
       }
+      await tx.order.update({ where: { id: payment.orderId }, data: { status: "CONFIRMED" } });
       return tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
     });
   }
 
   if (event.status === "failed") {
     return prisma.$transaction(async (tx) => {
+      const recorded = await tx.paymentWebhookEvent.createMany({ data: [{ provider, providerEventId: event.eventId, paymentId: payment.id, payload: event.rawPayload as Prisma.InputJsonValue }], skipDuplicates: true });
+      if (recorded.count === 0) return tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
       const updated = await tx.payment.updateMany({ where: { id: payment.id, status: { notIn: ["COMPLETED", "FAILED", "REFUNDED"] } }, data: { status: "FAILED", failureReason: "Provider reported failure" } });
       if (updated.count !== 1) return tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
 
@@ -91,7 +95,54 @@ export async function reconcilePaymentStatus(provider: string, event: WebhookEve
     });
   }
 
-  return prisma.payment.update({ where: { id: payment.id }, data: { status: "PROCESSING" } });
+  return prisma.$transaction(async (tx) => {
+    const recorded = await tx.paymentWebhookEvent.createMany({ data: [{ provider, providerEventId: event.eventId, paymentId: payment.id, payload: event.rawPayload as Prisma.InputJsonValue }], skipDuplicates: true });
+    if (recorded.count === 0) return tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    return tx.payment.update({ where: { id: payment.id }, data: { status: "PROCESSING" } });
+  });
+}
+
+export async function reconcilePendingPayments(limit = 25) {
+  const provider = getActivePaymentProvider();
+  const payments = await prisma.payment.findMany({
+    where: {
+      provider: provider.name,
+      providerRef: { not: null },
+      status: { in: ["PROCESSING", "PENDING"] },
+      OR: [{ nextReconcileAt: null }, { nextReconcileAt: { lte: new Date() } }],
+    },
+    orderBy: { createdAt: "asc" },
+    take: limit,
+  });
+
+  let processed = 0;
+  for (const payment of payments) {
+    const claimed = await prisma.payment.updateMany({
+      where: { id: payment.id, status: { in: ["PROCESSING", "PENDING"] }, OR: [{ nextReconcileAt: null }, { nextReconcileAt: { lte: new Date() } }] },
+      data: { lastReconciledAt: new Date(), reconcileAttempts: { increment: 1 }, nextReconcileAt: new Date(Date.now() + backoffMs(payment.reconcileAttempts + 1)) },
+    });
+    if (claimed.count !== 1 || !payment.providerRef) continue;
+
+    try {
+      const result = await provider.verify(payment.providerRef);
+      await reconcilePaymentStatus(provider.name, {
+        eventId: `poll:${payment.providerRef}:${result.status}:${result.amount}:${result.currency}`,
+        providerRef: result.providerRef,
+        status: result.status,
+        amount: result.amount,
+        currency: result.currency,
+        rawPayload: { source: "reconciliation", result },
+      });
+      processed += 1;
+    } catch (err) {
+      logger.error({ err, paymentId: payment.id, providerRef: payment.providerRef }, "Payment reconciliation failed");
+    }
+  }
+  return { scanned: payments.length, processed };
+}
+
+function backoffMs(attempt: number) {
+  return Math.min(60 * 60 * 1000, 2_000 * 2 ** Math.min(attempt - 1, 8));
 }
 
 export async function getPaymentStatusForOrder(orderId: string, requester: { sub: string; permissions: string[] }) {

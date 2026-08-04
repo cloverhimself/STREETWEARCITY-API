@@ -18,8 +18,8 @@ authRouter.post("/register", async (req, res) => {
 });
 
 authRouter.post("/verify-email", async (req, res) => {
-  const { token } = verifyEmailSchema.parse(req.body);
-  await verifyEmail(token);
+  const { email, code } = verifyEmailSchema.parse(req.body);
+  await verifyEmail(email, code);
   return ok(res, { verified: true });
 });
 

@@ -5,11 +5,21 @@ import { logger } from "./logger";
 const FROM = env.SENDBYTE_FROM_EMAIL || "no-reply@streetwearcity.com";
 
 const client = env.SENDBYTE_API_KEY ? new SendByte(env.SENDBYTE_API_KEY) : null;
+const testOutbox: Array<{ to: string; subject: string; html: string }> = [];
+
+export function drainTestEmailOutbox() {
+  if (env.NODE_ENV !== "test") throw new Error("The test email outbox is only available in test mode");
+  return testOutbox.splice(0);
+}
 
 // Email delivery is best-effort: a SendByte outage should never fail the
 // register/reset-password request that triggered it, so failures are logged,
 // not thrown.
 async function send(to: string, subject: string, html: string) {
+  if (env.NODE_ENV === "test") {
+    testOutbox.push({ to, subject, html });
+    return;
+  }
   if (!client) {
     logger.warn({ to, subject }, "SENDBYTE_API_KEY not set — skipping email send");
     return;
@@ -21,12 +31,11 @@ async function send(to: string, subject: string, html: string) {
   }
 }
 
-export function sendVerificationEmail(to: string, token: string) {
-  const link = `${env.CLIENT_ORIGIN}/verify-email?token=${token}`;
+export function sendVerificationEmail(to: string, code: string) {
   return send(
     to,
     "Verify your email",
-    `<p>Welcome to Streetwear City. Confirm your email to activate your account:</p><p><a href="${link}">${link}</a></p><p>This link expires in 24 hours.</p>`
+    `<p>Welcome to Streetwear City. Enter this verification code to activate your account:</p><p style="font-size:28px;font-weight:700;letter-spacing:6px">${code}</p><p>This code expires in 15 minutes.</p>`
   );
 }
 

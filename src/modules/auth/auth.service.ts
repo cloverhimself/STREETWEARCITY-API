@@ -6,10 +6,11 @@ import { sendPasswordResetEmail, sendVerificationEmail } from "../../lib/sendbyt
 import { HttpError } from "../../utils/http-error";
 
 const SALT_ROUNDS = 12;
-const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+const EMAIL_VERIFICATION_TTL_MS = 15 * 60 * 1000;
 const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const hashToken = (token: string) => crypto.createHash("sha256").update(token).digest("hex");
+const verificationCode = () => crypto.randomBytes(4).toString("hex").slice(0, 6).toUpperCase();
 
 async function resolvePermissions(userId: string) {
   const userRoles = await prisma.userRole.findMany({ where: { userId }, include: { role: { include: { permissions: { include: { permission: true } } } } } });
@@ -39,15 +40,15 @@ export async function register(input: { email: string; password: string; firstNa
   const customerRole = await prisma.role.findUnique({ where: { name: "customer" } });
   if (!customerRole) throw new Error("Base 'customer' role is missing — run the seed script");
   const user = await prisma.user.create({ data: { email: input.email, passwordHash: await bcrypt.hash(input.password, SALT_ROUNDS), profile: { create: { firstName: input.firstName, lastName: input.lastName } }, roles: { create: { roleId: customerRole.id } }, wishlist: { create: {} } } });
-  const token = crypto.randomBytes(32).toString("hex");
-  await prisma.verificationToken.create({ data: { userId: user.id, tokenHash: hashToken(token), type: "EMAIL_VERIFICATION", expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS) } });
-  await sendVerificationEmail(user.email, token);
-  return { user, emailVerificationToken: token };
+  const code = verificationCode();
+  await prisma.verificationToken.create({ data: { userId: user.id, tokenHash: hashToken(`${user.email.toLowerCase()}:${code}`), type: "EMAIL_VERIFICATION", expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS) } });
+  await sendVerificationEmail(user.email, code);
+  return { user };
 }
 
-export async function verifyEmail(token: string) {
-  const record = await prisma.verificationToken.findUnique({ where: { tokenHash: hashToken(token) } });
-  if (!record || record.type !== "EMAIL_VERIFICATION" || record.usedAt || record.expiresAt < new Date()) throw HttpError.badRequest("Verification link is invalid or expired");
+export async function verifyEmail(email: string, code: string) {
+  const record = await prisma.verificationToken.findUnique({ where: { tokenHash: hashToken(`${email.toLowerCase()}:${code.toUpperCase()}`) } });
+  if (!record || record.type !== "EMAIL_VERIFICATION" || record.usedAt || record.expiresAt < new Date()) throw HttpError.badRequest("Verification code is invalid, expired, or already used");
   await prisma.$transaction([
     prisma.user.update({ where: { id: record.userId }, data: { emailVerifiedAt: new Date() } }),
     prisma.verificationToken.update({ where: { id: record.id }, data: { usedAt: new Date() } }),

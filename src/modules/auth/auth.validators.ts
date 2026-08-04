@@ -13,7 +13,8 @@ export const loginSchema = z.object({
 });
 
 export const verifyEmailSchema = z.object({
-  token: z.string().min(1),
+  email: z.email(),
+  code: z.string().regex(/^[A-Za-z0-9]{6}$/, "Verification code must be 6 letters or numbers"),
 });
 
 export const requestPasswordResetSchema = z.object({

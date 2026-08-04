@@ -2,8 +2,10 @@ import { app } from "./app";
 import { env } from "./lib/env";
 import { logger } from "./lib/logger";
 import { releaseExpiredReservations } from "./modules/inventory/inventory.service";
+import { reconcilePendingPayments } from "./modules/payments/payments.service";
 
 const RESERVATION_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const PAYMENT_RECONCILE_INTERVAL_MS = 60 * 1000;
 
 app.listen(env.PORT, () => {
   logger.info(`streetwarecity-api listening on port ${env.PORT} (${env.NODE_ENV})`);
@@ -15,3 +17,7 @@ app.listen(env.PORT, () => {
 setInterval(() => {
   releaseExpiredReservations().catch((err) => logger.error({ err }, "Stock reservation sweep failed"));
 }, RESERVATION_SWEEP_INTERVAL_MS);
+
+setInterval(() => {
+  reconcilePendingPayments().catch((err) => logger.error({ err }, "Payment reconciliation sweep failed"));
+}, PAYMENT_RECONCILE_INTERVAL_MS);
