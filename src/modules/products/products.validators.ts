@@ -12,7 +12,11 @@ const variantSchema = z.object({
   stock: z.number().int().min(0),
 });
 
-export const createProductSchema = z.object({
+// Zod v4 doesn't allow .partial() on a schema that already has a refinement
+// attached, so the plain object shape is kept separate and create/update
+// each apply their own refinement on top of the shape they need (full vs.
+// partial).
+const productFieldsSchema = z.object({
   name: z.string().min(1),
   category: z.enum(["Headwear", "Tops", "Bottoms"]),
   sizeType: z.enum(["clothing", "adjustable", "fitted", "waist"]),
@@ -24,15 +28,23 @@ export const createProductSchema = z.object({
   images: z.array(z.string().min(1)).default([]),
   description: z.string().optional(),
   details: z.string().optional(),
-}).superRefine((input, context) => {
-  if (!input.variants && (input.stock === undefined || !input.colors)) {
-    context.addIssue({ code: "custom", message: "Provide variants, or provide colors and stock" });
-  }
+});
 
+function checkUniqueVariants(input: { variants?: { color: string; size: string }[] }, context: z.RefinementCtx) {
   const keys = input.variants?.map((variant) => `${variant.color.toLowerCase()}\0${variant.size.toLowerCase()}`) ?? [];
   if (new Set(keys).size !== keys.length) {
     context.addIssue({ code: "custom", message: "Variant color and size combinations must be unique", path: ["variants"] });
   }
+}
+
+export const createProductSchema = productFieldsSchema.superRefine((input, context) => {
+  if (!input.variants && (input.stock === undefined || !input.colors)) {
+    context.addIssue({ code: "custom", message: "Provide variants, or provide colors and stock" });
+  }
+  checkUniqueVariants(input, context);
 });
 
-export const updateProductSchema = createProductSchema.partial();
+// A partial update doesn't require variants/colors+stock to be present at
+// all (you might only be renaming the product) — only the uniqueness check
+// still applies, and only when variants are actually part of this update.
+export const updateProductSchema = productFieldsSchema.partial().superRefine(checkUniqueVariants);
