@@ -5,6 +5,7 @@ import { fromMinorUnits, minorUnitsToDecimal, toMinorUnits } from "../../lib/mon
 import { HttpError } from "../../utils/http-error";
 import { sendOrderStatusEmail } from "../../lib/sendbyte";
 import { resolveCartLines, type CartLineInput } from "../cart/cart.service";
+import { evaluateCoupon } from "../coupons/coupons.service";
 import { initializePaymentForOrder } from "../payments/payments.service";
 import type { createOrderSchema } from "./orders.validators";
 import type { z } from "zod";
@@ -14,6 +15,7 @@ const RESERVATION_TTL_MS = 15 * 60 * 1000;
 const orderInclude = {
   shippingAddress: true,
   payment: true,
+  coupon: { select: { code: true } },
   items: {
     include: {
       product: { select: { id: true, name: true, images: { take: 1, orderBy: { position: "asc" as const } } } },
@@ -35,6 +37,7 @@ function mapOrder(order: Prisma.OrderGetPayload<{ include: typeof orderInclude }
     subtotal: Number(order.subtotal),
     deliveryFee: Number(order.deliveryFee),
     discount: Number(order.discount),
+    couponCode: order.coupon?.code ?? null,
     total: Number(order.total),
     notes: order.notes,
     createdAt: order.createdAt.toISOString(),
@@ -94,19 +97,37 @@ export async function createOrder(userId: string, input: z.infer<typeof createOr
 
   const subtotalMinor = resolved.reduce((sum, line) => sum + toMinorUnits(line.unitPrice) * line.qty, 0);
   const deliveryFeeMinor = deliveryFeeMinorFor(input.deliveryMethod, subtotalMinor);
-  // Matches the storefront's existing demo coupon behavior (any non-empty code = 10% off) —
-  // there's no real promotions system yet, this just keeps the total customers see in the
-  // cart drawer consistent with what actually gets charged.
-  const discountMinor = 0;
-  const totalMinor = Math.max(0, subtotalMinor + deliveryFeeMinor - discountMinor);
   const subtotal = minorUnitsToDecimal(subtotalMinor);
   const deliveryFee = minorUnitsToDecimal(deliveryFeeMinor);
-  const discount = minorUnitsToDecimal(discountMinor);
-  const total = minorUnitsToDecimal(totalMinor);
 
   let orderId: string;
   try {
     orderId = await prisma.$transaction(async (tx) => {
+    // Coupon validity and its usage limit are re-checked here, inside the
+    // same transaction that claims a usage slot, so two concurrent checkouts
+    // can never both redeem the last use of a limited coupon (same guarded-
+    // update pattern as stock reservation below).
+    let couponId: string | null = null;
+    let discountMinor = 0;
+    if (input.couponCode) {
+      const evaluation = await evaluateCoupon(tx, input.couponCode, subtotalMinor, userId);
+      const claimed = await tx.coupon.updateMany({
+        where: {
+          id: evaluation.couponId,
+          isActive: true,
+          ...(evaluation.usageLimit !== null ? { timesUsed: { lt: evaluation.usageLimit } } : {}),
+        },
+        data: { timesUsed: { increment: 1 } },
+      });
+      if (claimed.count !== 1) throw HttpError.conflict("This coupon just reached its usage limit — remove it and try again");
+      couponId = evaluation.couponId;
+      discountMinor = evaluation.discountMinor;
+    }
+
+    const totalMinor = Math.max(0, subtotalMinor + deliveryFeeMinor - discountMinor);
+    const discount = minorUnitsToDecimal(discountMinor);
+    const total = minorUnitsToDecimal(totalMinor);
+
     const address = await tx.address.create({
       data: {
         userId,
@@ -130,6 +151,7 @@ export async function createOrder(userId: string, input: z.infer<typeof createOr
         deliveryFee,
         discount,
         total,
+        couponId,
         shippingAddressId: address.id,
         notes: input.notes,
         items: {
@@ -142,6 +164,10 @@ export async function createOrder(userId: string, input: z.infer<typeof createOr
         },
       },
     });
+
+    if (couponId) {
+      await tx.couponRedemption.create({ data: { couponId, userId, orderId: order.id } });
+    }
 
     const expiresAt = new Date(Date.now() + RESERVATION_TTL_MS);
     for (const line of resolved) {
@@ -165,10 +191,12 @@ export async function createOrder(userId: string, input: z.infer<typeof createOr
     throw error;
   }
 
+  const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
+
   let paymentError: string | null = null;
   let redirectUrl: string | null = null;
   try {
-    const initialized = await initializePaymentForOrder(orderId, fromMinorUnits(totalMinor), user.email);
+    const initialized = await initializePaymentForOrder(orderId, Number(order.total), user.email);
     redirectUrl = initialized.redirectUrl;
   } catch (err) {
     // The order and its reservation stay committed regardless — business
@@ -177,7 +205,6 @@ export async function createOrder(userId: string, input: z.infer<typeof createOr
     paymentError = err instanceof Error ? err.message : "Payment could not be started";
   }
 
-  const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
   return { order: mapOrder(order), paymentError, redirectUrl };
 }
 

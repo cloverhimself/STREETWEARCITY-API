@@ -257,6 +257,8 @@ model Order {
   deliveryFee       Decimal     @db.Decimal(12, 2)
   discount          Decimal     @default(0) @db.Decimal(12, 2)
   total             Decimal     @db.Decimal(12, 2)
+  couponId          String?
+  coupon            Coupon?     @relation(fields: [couponId], references: [id])
   shippingAddressId String
   shippingAddress   Address     @relation(fields: [shippingAddressId], references: [id])
   notes             String?
@@ -270,6 +272,51 @@ model Order {
   @@index([status, createdAt])
   @@index([userId, createdAt])
   @@map("orders")
+}
+
+// Discount codes admins create and manage. `timesUsed` is only ever
+// incremented atomically alongside a CouponRedemption row inside the same
+// checkout transaction (see orders.service.ts), the same conditional-update
+// pattern used for stock reservations, so two concurrent checkouts can never
+// both claim the last redemption of a limited coupon.
+model Coupon {
+  id                    String             @id @default(uuid())
+  code                  String             @unique
+  description           String?
+  discountType          CouponDiscountType
+  discountValue         Decimal            @db.Decimal(12, 2)
+  minOrderAmount        Decimal?           @db.Decimal(12, 2)
+  maxDiscountAmount     Decimal?           @db.Decimal(12, 2)
+  usageLimit            Int?
+  usageLimitPerCustomer Int?
+  timesUsed             Int                @default(0)
+  isActive              Boolean            @default(true)
+  startsAt              DateTime?
+  expiresAt             DateTime?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  redemptions CouponRedemption[]
+  orders      Order[]
+
+  @@map("coupons")
+}
+
+enum CouponDiscountType {
+  PERCENT
+  FIXED
+}
+
+model CouponRedemption {
+  id        String   @id @default(uuid())
+  couponId  String
+  coupon    Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  userId    String
+  orderId   String   @unique
+  createdAt DateTime @default(now())
+
+  @@index([couponId, userId])
+  @@map("coupon_redemptions")
 }
 
 model OrderItem {

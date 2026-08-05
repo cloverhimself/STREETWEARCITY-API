@@ -26,6 +26,7 @@ const PERMISSIONS = [
   "logs.view",
   "admins.manage",
   "settings.manage",
+  "coupons.manage",
 ] as const;
 
 // Roles, from the SRS user roles (section 4). "customer" isn't in that list
